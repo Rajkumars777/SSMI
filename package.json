@@ -1,0 +1,10 @@
+{
+  "name": "ssmi-project",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix apps/web run dev",
+    "build": "cd apps/web && npm install && npm run build",
+    "start": "npm --prefix apps/web run start"
+  }
+}
