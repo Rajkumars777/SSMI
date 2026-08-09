@@ -1,0 +1,287 @@
+.root { padding-bottom: 4rem; }
+
+.notFound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 4rem 0;
+  text-align: center;
+}
+
+/* Breadcrumb */
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+}
+
+.breadcrumbLink {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+.breadcrumbLink:hover { text-decoration: underline; }
+.breadSep { opacity: 0.4; }
+
+/* Header */
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.75rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.headerLeft { flex: 1; display: flex; flex-direction: column; gap: 0.625rem; }
+
+.headerMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  flex-wrap: wrap;
+}
+
+.company { color: var(--accent-blue); font-weight: 600; }
+.dot { opacity: 0.4; }
+
+.headerTitle { font-size: 1.4rem; font-weight: 800; margin: 0; }
+
+.headerBadges { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+.headerRight {
+  display: flex;
+  gap: 1.5rem;
+  flex-shrink: 0;
+}
+
+.headerStat { text-align: center; }
+.headerStatVal { font-size: 1.75rem; font-weight: 800; color: var(--text-primary); }
+.headerStatLab { font-size: 0.75rem; color: var(--text-muted); }
+
+/* Tabs */
+.tabs { margin-bottom: 1.25rem; }
+
+.tabCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  font-size: 0.68rem;
+  background: rgba(255,255,255,0.12);
+  margin-left: 2px;
+}
+
+.tabContent { }
+
+/* Summary */
+.summaryGrid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.summaryMain {
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.summaryMain h3 { margin-bottom: 0.875rem; }
+
+.overviewText {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: 1.5rem;
+}
+
+.sectionLabel {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin: 1.375rem 0 0.625rem;
+}
+
+.objectiveText {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  font-style: italic;
+  padding: 0.75rem 1rem;
+  border-left: 2px solid var(--accent-blue);
+  background: rgba(79,142,247,0.05);
+  border-radius: 0 8px 8px 0;
+  margin: 0;
+}
+
+.bulletList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.bulletList li {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  padding-left: 1.25rem;
+  position: relative;
+  line-height: 1.55;
+}
+
+.bulletList li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--accent-blue);
+}
+
+.decisions li::before { color: var(--accent-green); }
+.risks li::before { color: var(--accent-red); }
+
+.summaryRight { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.nextSteps, .intelCard { padding: 1.375rem; }
+.nextSteps h4, .intelCard h4 { margin-bottom: 0.875rem; font-size: 0.9rem; }
+
+.nextStepsList { display: flex; flex-direction: column; gap: 0.625rem; }
+
+.nextStep {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.nextStepNum {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.intelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+}
+.intelRow:last-child { border-bottom: none; }
+
+/* Timeline */
+.timelineWrap { }
+.timelineHeader { margin-bottom: 1.5rem; }
+.timelineHeader h3 { margin-bottom: 0.25rem; }
+.timelineHeader p { font-size: 0.85rem; color: var(--text-muted); }
+.timelineList { display: flex; flex-direction: column; gap: 0.75rem; }
+
+/* Actions */
+.actionsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.actionsHeader h3 { margin: 0; }
+.actionsProgress { font-size: 0.82rem; color: var(--text-muted); }
+
+.actionsList { display: flex; flex-direction: column; gap: 1.375rem; }
+
+.actionsGroup { display: flex; flex-direction: column; gap: 0.625rem; }
+.actionsGroupLabel { margin-bottom: 0.25rem; }
+
+/* Transcript */
+.transcriptWrap { padding: 1.5rem; }
+.transcriptHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+.transcriptHead h3 { margin: 0; }
+
+.transcriptList { display: flex; flex-direction: column; gap: 1.125rem; }
+
+.transcriptSeg {
+  padding: 0.875rem 1rem;
+  border-radius: 10px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  position: relative;
+}
+
+.linked {
+  border-color: color-mix(in srgb, var(--seg-color) 30%, transparent) !important;
+  background: color-mix(in srgb, var(--seg-color) 4%, var(--bg-surface)) !important;
+}
+
+.segMeta {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  margin-bottom: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.segSpeaker {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.segCustomer { color: var(--accent-amber); }
+.segSales { color: var(--accent-blue); }
+
+.segTime {
+  font-size: 0.72rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted);
+}
+
+.segEvent {
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.segText {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+
+.empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 3rem 0;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 900px) {
+  .summaryGrid { grid-template-columns: 1fr; }
+  .header { flex-direction: column; }
+}

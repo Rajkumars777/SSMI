@@ -1,0 +1,242 @@
+.root { padding-bottom: 4rem; }
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+/* Main */
+.main { display: flex; flex-direction: column; gap: 1.25rem; }
+
+/* Recording card */
+.recordingCard { padding: 1.75rem; }
+
+.recHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.5rem;
+}
+
+.recIndicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recDot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  position: relative;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+.recDot::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  opacity: 0.25;
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+.recLabel {
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  color: var(--accent-red);
+}
+
+.timer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.waveWrap { margin-bottom: 1.5rem; }
+.waveWrap > * { width: 100%; }
+
+.gestureToast {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(34,211,160,0.12);
+  border: 1px solid rgba(34,211,160,0.3);
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent-green);
+  margin-bottom: 1rem;
+}
+
+.controls {
+  display: flex;
+  gap: 0.875rem;
+}
+
+/* Transcript */
+.transcriptCard { padding: 1.375rem; }
+
+.transcriptHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.transcriptHeader h3 { font-size: 1rem; margin: 0; }
+
+.transcriptFeed {
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  scroll-behavior: smooth;
+}
+
+.transcriptEmpty {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 1rem 0;
+}
+
+.transcriptLine {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.tSpeaker {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.tCustomer { color: var(--accent-amber); }
+.tSales { color: var(--accent-blue); }
+
+.tText {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* Sidebar */
+.sidebar { display: flex; flex-direction: column; gap: 1.25rem; position: sticky; top: calc(var(--nav-height) + 1rem); }
+
+.eventsCard { padding: 1.25rem; }
+
+.eventsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.eventsHeader h3 { font-size: 1rem; margin: 0; }
+
+.eventsCount { font-size: 0.78rem; color: var(--text-muted); }
+
+.eventsList { display: flex; flex-direction: column; gap: 0.625rem; }
+
+.eventsEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.eventsEmptyDots { display: flex; gap: 0.375rem; }
+
+.emptyDot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: pulse-dot 1s ease-in-out infinite;
+}
+
+.eventItem {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ev-color, var(--accent-blue)) 6%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--ev-color, var(--accent-blue)) 20%, transparent);
+}
+
+.evDot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+.evType { font-size: 0.8rem; font-weight: 600; }
+
+.evTime {
+  font-size: 0.72rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-muted);
+  margin-top: 1px;
+}
+
+.bookmarks {
+  margin-top: 1rem;
+  padding-top: 0.875rem;
+  border-top: 1px solid var(--border);
+}
+
+.bookmarksLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 0.5rem;
+}
+
+.bookmark {
+  display: inline-flex;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(245,158,11,0.12);
+  color: var(--accent-amber);
+  border: 1px solid rgba(245,158,11,0.25);
+  margin: 2px;
+}
+
+/* Voice hints */
+.voiceHints {
+  padding: 1.125rem;
+}
+
+.voiceTitle {
+  font-size: 0.875rem;
+  font-weight: 700;
+  margin: 0 0 0.875rem;
+}
+
+.voiceHintItem {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  padding: 0.375rem 0;
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { position: static; }
+}

@@ -1,0 +1,327 @@
+.root {
+  min-height: 100vh;
+}
+
+/* ── Hero ──────────────────────────────────────────────────── */
+.hero {
+  padding: calc(var(--nav-height) + 5rem) 0 4rem;
+  text-align: center;
+  position: relative;
+}
+
+.heroBadge {
+  margin-bottom: 1.5rem;
+}
+
+.heroTitle {
+  margin-bottom: 1.25rem;
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.heroSubtitle {
+  font-size: 1.1rem;
+  color: var(--text-secondary);
+  max-width: 620px;
+  margin: 0 auto 2rem;
+  line-height: 1.7;
+}
+
+.heroCta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 4rem;
+}
+
+/* ── Wave Viz ──────────────────────────────────────────────── */
+.waveViz {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.waveCard {
+  background: var(--bg-card);
+  border: 1px solid var(--border-bright);
+  border-radius: 20px;
+  padding: 2rem;
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-card), var(--shadow-glow);
+}
+
+.waveTop {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.recDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.recDot::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: var(--accent-red);
+  opacity: 0.3;
+  animation: pulse-ring 1.5s ease-out infinite;
+}
+
+.recLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--accent-red);
+  flex: 1;
+}
+
+.recTimer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.waveBars {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 60px;
+  margin-bottom: 1.5rem;
+}
+
+.waveBar {
+  display: block;
+  flex: 1;
+  border-radius: 2px;
+  background: linear-gradient(to top, #4f8ef7, #7c5df0);
+  opacity: 0.8;
+  animation: waveAnim 900ms ease-in-out infinite alternate;
+}
+
+@keyframes waveAnim {
+  from { transform: scaleY(0.2); }
+  to   { transform: scaleY(1); }
+}
+
+.eventPills {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pill {
+  font-size: 0.75rem !important;
+  animation: fadeInUp 0.5s ease both;
+}
+
+/* ── Stats ─────────────────────────────────────────────────── */
+.statsSection { padding-top: 0; }
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
+.statCard {
+  padding: 1.75rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.statValue {
+  font-size: 2.5rem;
+  font-weight: 800;
+  background: var(--grad-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  line-height: 1;
+}
+
+.statLabel {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* ── Features ──────────────────────────────────────────────── */
+.sectionHeader {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+.sectionHeader p {
+  margin-top: 0.75rem;
+  font-size: 1rem;
+}
+
+.featuresGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+
+.featureCard {
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  position: relative;
+  overflow: hidden;
+  transition: all var(--transition-slow);
+}
+
+.featureCard::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--feature-color, var(--accent-blue));
+  opacity: 0;
+  transition: opacity var(--transition);
+}
+.featureCard:hover::after { opacity: 1; }
+
+.featureIcon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--feature-color) 12%, transparent);
+}
+
+.featureTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.featureDesc {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* ── Steps ─────────────────────────────────────────────────── */
+.stepsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+  position: relative;
+}
+
+.step {
+  padding: 1.75rem 1.5rem;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+.stepNum {
+  font-size: 2.5rem;
+  font-weight: 800;
+  line-height: 1;
+  background: var(--grad-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  opacity: 0.5;
+}
+
+.stepTitle {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.stepDesc {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.stepArrow {
+  position: absolute;
+  right: -0.875rem;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+  color: var(--text-muted);
+  background: var(--bg-deep);
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── CTA ───────────────────────────────────────────────────── */
+.ctaSection { padding-bottom: 6rem; }
+
+.ctaCard {
+  text-align: center;
+  padding: 4rem 2rem;
+  background: var(--grad-surface);
+  border-color: var(--border-bright);
+}
+
+.ctaCard h2 { margin-bottom: 0.75rem; }
+.ctaCard p { margin-bottom: 2rem; }
+
+.ctaBtns {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+/* ── Footer ────────────────────────────────────────────────── */
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 1.5rem 0;
+}
+
+.footerInner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ── Responsive ────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .featuresGrid { grid-template-columns: repeat(2, 1fr); }
+  .stepsGrid { grid-template-columns: repeat(2, 1fr); }
+  .statsGrid { grid-template-columns: repeat(2, 1fr); }
+  .stepArrow { display: none; }
+}
+
+@media (max-width: 600px) {
+  .featuresGrid { grid-template-columns: 1fr; }
+  .stepsGrid { grid-template-columns: 1fr; }
+  .statsGrid { grid-template-columns: repeat(2, 1fr); }
+}

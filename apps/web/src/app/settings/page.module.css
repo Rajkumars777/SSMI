@@ -1,0 +1,276 @@
+.root { padding-bottom: 4rem; }
+
+.pageHeader { margin-bottom: 2rem; }
+.pageHeader h1 { margin-bottom: 0.4rem; }
+.pageHeader p { color: var(--text-secondary); }
+
+.layout {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 1.25rem;
+  align-items: start;
+}
+
+/* Sidebar nav */
+.nav {
+  padding: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  position: sticky;
+  top: calc(var(--nav-height) + 1rem);
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.625rem 0.875rem;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition);
+}
+
+.navItem:hover {
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.04);
+}
+
+.navActive {
+  color: var(--accent-blue) !important;
+  background: rgba(79,142,247,0.1) !important;
+}
+
+.navIcon { font-size: 1rem; }
+
+/* Main section */
+.main { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.section { padding: 1.75rem; }
+
+.sectionHeader { margin-bottom: 1.5rem; }
+.sectionHeader h2 { margin-bottom: 0.375rem; font-size: 1.25rem; }
+.sectionHeader p { font-size: 0.875rem; color: var(--text-secondary); margin: 0; }
+
+.form { display: flex; flex-direction: column; gap: 1.25rem; }
+
+.formGroup { display: flex; flex-direction: column; gap: 0.375rem; }
+
+.formRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.hint {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin: 0 0 0.625rem;
+}
+
+/* Gesture options */
+.gestureOptions { display: flex; flex-direction: column; gap: 0.5rem; }
+
+.gestureOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--bg-surface);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.gestureOption:hover { border-color: var(--border-bright); }
+
+.gestureActive {
+  border-color: var(--accent-blue) !important;
+  background: rgba(79,142,247,0.07) !important;
+}
+
+.gestureLabel { font-size: 0.875rem; font-weight: 600; color: var(--text-primary); }
+.gestureDesc { font-size: 0.75rem; color: var(--text-muted); margin-top: 2px; }
+
+/* Threshold slider */
+.thresholdVal {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--accent-blue);
+  margin-left: auto;
+}
+
+.slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--bg-elevated);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  box-shadow: 0 2px 8px rgba(79,142,247,0.4);
+  cursor: pointer;
+}
+
+.sliderLabels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.375rem;
+}
+
+/* Mode cards */
+.modeCards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.875rem;
+}
+
+.modeCard {
+  padding: 1.5rem;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: var(--bg-surface);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.modeCard:hover { border-color: var(--border-bright); }
+
+.modeCardActive {
+  border-color: var(--accent-blue) !important;
+  background: rgba(79,142,247,0.07) !important;
+  box-shadow: 0 0 0 3px rgba(79,142,247,0.12) !important;
+}
+
+.modeCardIcon { font-size: 2rem; }
+.modeCardTitle { font-size: 0.95rem; font-weight: 700; color: var(--text-primary); }
+.modeCardFeatures { display: flex; flex-direction: column; gap: 0.2rem; }
+.modeCardFeatures div { font-size: 0.78rem; color: var(--text-muted); }
+
+/* Info box */
+.infoBox {
+  display: flex;
+  gap: 0.75rem;
+  padding: 0.875rem 1rem;
+  border-radius: 10px;
+  background: rgba(79,142,247,0.05);
+  border: 1px solid rgba(79,142,247,0.15);
+  color: var(--accent-blue);
+  flex-shrink: 0;
+}
+
+.infoBox p {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.55;
+}
+
+/* Profile */
+.profileRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.profileAvatar {
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  background: var(--grad-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.profileName { font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+.profileRole { font-size: 0.8rem; color: var(--text-muted); margin-top: 2px; }
+
+/* Pipeline */
+.pipelineGrid { display: flex; flex-direction: column; gap: 0; }
+
+.pipelineRow {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.pipelineRow:last-child { border-bottom: none; }
+
+.pipelineStage {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  min-width: 200px;
+}
+
+.pipelineModel {
+  flex: 1;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.costBadge {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1.25rem;
+  padding: 1rem 1.25rem;
+  border-radius: 10px;
+  background: rgba(34,211,160,0.06);
+  border: 1px solid rgba(34,211,160,0.2);
+}
+
+.costLabel { font-size: 0.875rem; font-weight: 600; color: var(--text-secondary); }
+.costVal { font-size: 1.5rem; font-weight: 800; color: var(--accent-green); }
+
+/* Save */
+.saveRow {
+  display: flex;
+  justify-content: flex-end;
+}
+
+@media (max-width: 768px) {
+  .layout { grid-template-columns: 1fr; }
+  .nav { position: static; flex-direction: row; flex-wrap: wrap; }
+  .formRow { grid-template-columns: 1fr; }
+  .modeCards { grid-template-columns: 1fr; }
+  .pipelineStage { min-width: 120px; }
+}
