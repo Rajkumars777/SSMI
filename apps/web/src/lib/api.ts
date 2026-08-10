@@ -1,11 +1,11 @@
-import { Meeting, MeetingEvent, ActionItem, MeetingSummary, SearchResult, EventType } from './types';
+import { Meeting, TimelineEvent, ActionItem, MeetingSummary, SearchResult, EventType } from './types';
 import { MOCK_MEETINGS, MOCK_STATS, MOCK_SEARCH_RESULTS } from './mockData';
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
 
 export interface CreateMeetingPayload {
-  customerName: str;
+  customerName: string;
   customerCompany?: string;
   processingMode?: 'fast' | 'accurate';
   title?: string;
