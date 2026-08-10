@@ -1,8 +1,10 @@
 'use client';
 
-import { use, useState } from 'react';
+import { use, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { getMeetingById, formatTimestamp, formatDuration, EVENT_TYPE_LABELS, EVENT_TYPE_COLORS, SENTIMENT_LABELS, PURCHASE_INTENT_LABELS } from '@/lib/mockData';
+import { apiClient } from '@/lib/api';
+import type { Meeting } from '@/lib/types';
 import TimelineEventCard from '@/components/TimelineEventCard';
 import ActionItemCard from '@/components/ActionItemCard';
 import styles from './page.module.css';
@@ -27,9 +29,32 @@ const sentimentColors: Record<string, string> = {
 
 export default function MeetingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
-  const meeting = getMeetingById(id);
+  const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('summary');
   const [activeEvent, setActiveEvent] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Try API first, fall back to mock data
+    apiClient.getMeeting(id).then((data) => {
+      setMeeting(data ?? getMeetingById(id) ?? null);
+    }).catch(() => {
+      setMeeting(getMeetingById(id) ?? null);
+    }).finally(() => setLoading(false));
+  }, [id]);
+
+  if (loading) {
+    return (
+      <div className="page-wrapper">
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 300 }}>
+          <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
+            <div style={{ width: 40, height: 40, border: '3px solid var(--border)', borderTopColor: 'var(--accent-blue)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', margin: '0 auto 12px' }} />
+            Loading meeting intelligence…
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!meeting) {
     return (
