@@ -1,5 +1,5 @@
-import { Meeting, TimelineEvent, ActionItem, MeetingSummary, SearchResult, EventType } from './types';
-import { MOCK_MEETINGS, MOCK_STATS, MOCK_SEARCH_RESULTS } from './mockData';
+import { Meeting, SearchResult, EventType } from './types';
+import { MOCK_MEETINGS, MOCK_SEARCH_RESULTS } from './mockData';
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';

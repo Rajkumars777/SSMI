@@ -1,5 +1,6 @@
 import os
 from typing import AsyncGenerator
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
@@ -47,7 +48,7 @@ async def init_db():
     async with engine.begin() as conn:
         # Enable pgvector
         try:
-            await conn.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         except Exception as e:
             print(f"[Warning] Could not enable pgvector extension automatically: {e}")
 
