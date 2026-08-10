@@ -2,8 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { MOCK_SEARCH_RESULTS, formatTimestamp, EVENT_TYPE_LABELS, EVENT_TYPE_COLORS } from '@/lib/mockData';
-import type { EventType } from '@/lib/types';
+import { formatTimestamp, EVENT_TYPE_LABELS, EVENT_TYPE_COLORS } from '@/lib/mockData';
+import { apiClient } from '@/lib/api';
+import type { EventType, SearchResult } from '@/lib/types';
 import styles from './page.module.css';
 
 const FILTERS: { label: string; type: EventType }[] = [
@@ -20,6 +21,7 @@ const importanceLabel = (level: number) => `Priority ${level}/5`;
 export default function SearchPage() {
   const [query, setQuery] = useState('');
   const [activeFilters, setActiveFilters] = useState<EventType[]>([]);
+  const [results, setResults] = useState<SearchResult[]>([]);
   const [searched, setSearched] = useState(false);
 
   function toggleFilter(type: EventType) {
@@ -28,22 +30,17 @@ export default function SearchPage() {
     );
   }
 
-  function handleSearch(e: React.FormEvent) {
-    e.preventDefault();
+  async function executeSearch(qStr: string, filters: EventType[]) {
     setSearched(true);
+    const filter = filters.length > 0 ? filters[0] : undefined;
+    const res = await apiClient.searchMeetings(qStr, filter);
+    setResults(res);
   }
 
-  const results = MOCK_SEARCH_RESULTS.filter((r) => {
-    const matchesQuery =
-      !query.trim() ||
-      r.snippet.toLowerCase().includes(query.toLowerCase()) ||
-      r.meetingTitle.toLowerCase().includes(query.toLowerCase()) ||
-      r.customerName.toLowerCase().includes(query.toLowerCase()) ||
-      r.customerCompany.toLowerCase().includes(query.toLowerCase());
-    const matchesFilter =
-      activeFilters.length === 0 || activeFilters.includes(r.eventType);
-    return matchesQuery && matchesFilter;
-  });
+  function handleSearch(e: React.FormEvent) {
+    e.preventDefault();
+    executeSearch(query, activeFilters);
+  }
 
   return (
     <div className={`page-wrapper ${styles.root}`}>

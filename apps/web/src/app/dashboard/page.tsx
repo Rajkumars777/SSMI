@@ -1,6 +1,11 @@
+'use client';
+
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import MeetingCard from '@/components/MeetingCard';
 import { MOCK_MEETINGS, MOCK_STATS, formatDuration } from '@/lib/mockData';
+import { apiClient } from '@/lib/api';
+import type { Meeting } from '@/lib/types';
 import styles from './page.module.css';
 
 const statCards = [
@@ -55,6 +60,15 @@ const statCards = [
 ];
 
 export default function DashboardPage() {
+  const [meetings, setMeetings] = useState<Meeting[]>(MOCK_MEETINGS);
+
+  useEffect(() => {
+    apiClient.getMeetings().then((data) => {
+      if (data && data.length > 0) {
+        setMeetings(data);
+      }
+    });
+  }, []);
   return (
     <div className={`page-wrapper ${styles.root}`}>
       <div className="container">
@@ -155,7 +169,7 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className={styles.meetingsList}>
-            {MOCK_MEETINGS.map((m) => (
+            {meetings.map((m) => (
               <MeetingCard key={m.id} meeting={m} />
             ))}
           </div>

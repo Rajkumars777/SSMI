@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { apiClient } from '@/lib/api';
 import styles from './page.module.css';
 
 export default function NewMeetingPage() {
@@ -14,20 +15,40 @@ export default function NewMeetingPage() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
 
-  function handleStartMeeting() {
+  async function handleStartMeeting() {
     if (!customerName.trim()) return;
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const meeting = await apiClient.createMeeting({
+        customerName: customerName.trim(),
+        customerCompany: customerCompany.trim(),
+        processingMode: mode,
+      });
+      router.push(`/meeting/live?id=${meeting.id}`);
+    } catch (err) {
       router.push('/meeting/live');
-    }, 800);
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function handleUpload() {
+  async function handleUpload() {
     if (!file) return;
     setLoading(true);
-    setTimeout(() => {
+    try {
+      const created = await apiClient.createMeeting({
+        customerName: customerName.trim() || 'Client',
+        customerCompany: customerCompany.trim() || 'Organization',
+        processingMode: mode,
+        title: file.name,
+      });
+      const processed = await apiClient.uploadAudio(created.id, file);
+      router.push(`/meeting/${processed.id}`);
+    } catch (err) {
       router.push('/meeting/meeting_001');
-    }, 1200);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function handleDrop(e: React.DragEvent) {
