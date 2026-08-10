@@ -35,6 +35,15 @@ class BusinessEventClassifier:
     def classify_segment(text: str, speaker: str) -> Optional[Dict[str, Any]]:
         text_lower = text.lower()
 
+        # Check explicit budget keywords first
+        if "budget" in text_lower or "annual budget" in text_lower:
+            return {
+                "type": EventType.BUDGET,
+                "importance": 4,
+                "confidence": 0.95,
+                "purchase_intent": PurchaseIntent.HIGH,
+            }
+
         matched_type = None
         highest_score = 0
 

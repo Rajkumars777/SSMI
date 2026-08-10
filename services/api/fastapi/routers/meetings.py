@@ -44,6 +44,7 @@ async def create_meeting(
     if payload.customerCompany:
         title = f"Discussion — {payload.customerCompany}"
 
+    from datetime import datetime
     meeting = Meeting(
         id=meeting_id,
         title=title,
@@ -51,6 +52,9 @@ async def create_meeting(
         customer_company=payload.customerCompany or "Company",
         processing_mode=payload.processingMode,
         status=MeetingStatus.RECORDING,
+        date=datetime.utcnow(),
+        duration=0.0,
+        tags=[],
     )
 
     db.add(meeting)

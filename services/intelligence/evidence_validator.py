@@ -7,8 +7,13 @@ class EvidenceValidator:
     @staticmethod
     def validate_claim(claim: str, transcript_text: str) -> Tuple[bool, float, List[str]]:
         """Checks if a generated claim/insight is supported by transcript text."""
-        claim_words = set(claim.lower().split())
-        transcript_words = set(transcript_text.lower().split())
+        import string
+        # Clean punctuation and normalize numbers (e.g. 5,000 -> 5000)
+        clean_claim = claim.translate(str.maketrans('', '', string.punctuation)).lower()
+        clean_transcript = transcript_text.translate(str.maketrans('', '', string.punctuation)).lower()
+
+        claim_words = set(clean_claim.split())
+        transcript_words = set(clean_transcript.split())
 
         # Filter out common stop words
         stop_words = {"the", "a", "an", "is", "are", "was", "were", "to", "for", "in", "of", "and", "or", "we", "you", "our", "us"}
