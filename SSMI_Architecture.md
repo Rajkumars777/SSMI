@@ -27,7 +27,7 @@ The system records live meetings or processes uploaded audio recordings, then au
 
 ---
 
-# 2. Final Recommended Technology Stack
+# 2. Final Technology Stack
 
 | Layer | Final Choice |
 |---|---|
