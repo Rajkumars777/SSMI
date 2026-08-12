@@ -60,23 +60,40 @@ async def meeting_websocket_endpoint(websocket: WebSocket, meeting_id: str):
 
             elif "text" in message and message["text"]:
                 data = json.loads(message["text"])
-                if data.get("type") == "PARTIAL_TRANSCRIPT":
+                msg_type = data.get("type", "")
+
+                if msg_type == "PARTIAL_TRANSCRIPT":
                     text = data.get("text", "")
                     speaker = data.get("speaker", "CUSTOMER")
+
+                    # Voice keyword gestures (bookmark / stop)
+                    gesture_result = gesture_detector.check_spoken_text(text)
+                    if gesture_result["gesture"] in ("BOOKMARK", "STOP"):
+                        await websocket.send_json({
+                            "event_type": "GESTURE_DETECTED",
+                            "gesture": gesture_result["gesture"],
+                            "confidence": gesture_result["confidence"],
+                        })
+                        if gesture_result["gesture"] == "STOP":
+                            continue
+
                     cls_result = classifier.classify_segment(text, speaker)
 
                     if cls_result:
+                        event_type_val = cls_result["type"]
+                        purchase_intent_val = cls_result["purchase_intent"]
                         await websocket.send_json({
                             "event_type": "LIVE_BUSINESS_EVENT",
-                            "type": cls_result["type"],
-                            "title": f"{cls_result['type'].value.title()} Detected",
+                            "type": event_type_val.value if hasattr(event_type_val, "value") else str(event_type_val),
+                            "title": f"{event_type_val.value.title()} Detected" if hasattr(event_type_val, "value") else "Event Detected",
                             "importance": cls_result["importance"],
                             "confidence": cls_result["confidence"],
-                            "purchase_intent": cls_result["purchase_intent"],
+                            "purchase_intent": purchase_intent_val.value if hasattr(purchase_intent_val, "value") else str(purchase_intent_val),
                             "snippet": text,
                         })
 
     except WebSocketDisconnect:
         manager.disconnect(meeting_id, websocket)
     except Exception as e:
+        print(f"[WebSocket] Unexpected error for meeting {meeting_id}: {e}")
         manager.disconnect(meeting_id, websocket)

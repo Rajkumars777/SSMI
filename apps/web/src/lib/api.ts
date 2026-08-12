@@ -1,5 +1,4 @@
 import { Meeting, SearchResult, EventType } from './types';
-import { MOCK_MEETINGS, MOCK_SEARCH_RESULTS } from './mockData';
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
@@ -11,6 +10,57 @@ export interface CreateMeetingPayload {
   title?: string;
 }
 
+export interface LiveTranscriptLinePayload {
+  speaker: string;
+  text: string;
+  startTime: number;
+}
+
+export interface FinalizeLiveMeetingPayload {
+  transcript: LiveTranscriptLinePayload[];
+  duration: number;
+  bookmarks?: number[];
+}
+
+export interface DashboardStats {
+  totalMeetings: number;
+  totalActionItems: number;
+  avgMeetingMinutes: number;
+  hoursSaved: number;
+  meetingsThisWeek: number;
+  conversionRate: number;
+}
+
+export interface MeetingStatusResponse {
+  status: string;
+  duration: number;
+}
+
+class ApiError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, { cache: 'no-store', ...init });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      detail = body.detail || body.message || detail;
+    } catch {
+      // ignore parse errors
+    }
+    throw new ApiError(String(detail), res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
 class SSMIApiClient {
   private baseUrl: string;
 
@@ -18,115 +68,152 @@ class SSMIApiClient {
     this.baseUrl = baseUrl;
   }
 
-  /**
-   * Fetch all meetings with fallback to realistic mock data if offline.
-   */
-  async getMeetings(): Promise<Meeting[]> {
+  /** Check if backend is reachable. */
+  async healthCheck(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/meetings`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      console.warn('[SSMI API] Backend offline, using local data fallback.');
-      return MOCK_MEETINGS;
+      const res = await fetch(`${this.baseUrl}/health`, { cache: 'no-store' });
+      return res.ok;
+    } catch {
+      return false;
     }
   }
 
-  /**
-   * Fetch detailed report for a specific meeting.
-   */
+  async getMeetings(): Promise<Meeting[]> {
+    return requestJson<Meeting[]>(`${this.baseUrl}/api/meetings`);
+  }
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    return requestJson<DashboardStats>(`${this.baseUrl}/api/meetings/dashboard/stats`);
+  }
+
   async getMeeting(id: string): Promise<Meeting | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/meetings/${id}`, {
-        cache: 'no-store',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
+      return await requestJson<Meeting>(`${this.baseUrl}/api/meetings/${id}`);
     } catch (err) {
-      console.warn(`[SSMI API] Fetching meeting ${id} with fallback.`);
-      return MOCK_MEETINGS.find((m) => m.id === id) || MOCK_MEETINGS[0];
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
     }
   }
 
-  /**
-   * Create a new meeting session.
-   */
+  async getMeetingStatus(id: string): Promise<MeetingStatusResponse> {
+    return requestJson<MeetingStatusResponse>(`${this.baseUrl}/api/meetings/${id}/status`);
+  }
+
+  async reprocessMeeting(id: string): Promise<Meeting> {
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${id}/reprocess`, {
+      method: 'POST',
+    });
+  }
+
+  async processMeeting(id: string): Promise<Meeting> {
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${id}/process`, {
+      method: 'POST',
+    });
+  }
+
+  async cancelProcessing(id: string): Promise<Meeting> {
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${id}/cancel`, {
+      method: 'POST',
+    });
+  }
+
+  async deleteMeeting(id: string): Promise<void> {
+    if (!id || id === 'undefined') {
+      throw new ApiError('Invalid meeting id', 400);
+    }
+    const res = await fetch(`${this.baseUrl}/api/meetings/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      cache: 'no-store',
+    });
+    if (res.status === 404) {
+      // Idempotent — already deleted
+      return;
+    }
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try {
+        const body = await res.json();
+        detail = body.detail || body.message || detail;
+      } catch {
+        // ignore
+      }
+      throw new ApiError(String(detail), res.status);
+    }
+  }
+
   async createMeeting(payload: CreateMeetingPayload): Promise<Meeting> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/meetings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      console.warn('[SSMI API] Creating meeting with fallback.');
-      return {
-        id: `meeting_${Date.now().toString(36)}`,
-        title: payload.title || `Meeting with ${payload.customerName}`,
-        customerName: payload.customerName,
-        customerCompany: payload.customerCompany || 'Company',
-        date: new Date().toISOString(),
-        duration: 0,
-        status: 'recording',
-        processingMode: payload.processingMode || 'accurate',
-        tags: ['live'],
-      };
-    }
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
   }
 
-  /**
-   * Upload audio file for full transcription and intelligence extraction.
-   */
-  async uploadAudio(meetingId: string, file: File): Promise<Meeting> {
+  getMeetingAudioUrl(meetingId: string): string {
+    return `${this.baseUrl}/api/meetings/${encodeURIComponent(meetingId)}/audio`;
+  }
+
+  async uploadAudio(meetingId: string, file: File, autoProcess = true): Promise<Meeting> {
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('auto_process', autoProcess ? 'true' : 'false');
 
-    try {
-      const res = await fetch(`${this.baseUrl}/api/meetings/${meetingId}/audio`, {
-        method: 'POST',
-        body: formData,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      console.warn('[SSMI API] Audio upload fallback mode.');
-      return MOCK_MEETINGS[0];
-    }
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${meetingId}/audio`, {
+      method: 'POST',
+      body: formData,
+    });
   }
 
-  /**
-   * Search meetings across pricing, objections, budget, and commitments.
-   */
+  /** Finalize a live meeting using browser-captured transcript (skips Whisper). */
+  async finalizeLiveMeeting(meetingId: string, payload: FinalizeLiveMeetingPayload): Promise<Meeting> {
+    return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${meetingId}/finalize-live`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        transcript: payload.transcript.map((line) => ({
+          speaker: line.speaker,
+          text: line.text,
+          startTime: line.startTime,
+        })),
+        duration: payload.duration,
+        bookmarks: payload.bookmarks ?? [],
+      }),
+    });
+  }
+
   async searchMeetings(query: string = '', eventType?: EventType): Promise<SearchResult[]> {
-    try {
-      const params = new URLSearchParams();
-      if (query) params.append('q', query);
-      if (eventType) params.append('event_type', eventType);
-
-      const res = await fetch(`${this.baseUrl}/api/search?${params.toString()}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      console.warn('[SSMI API] Search query fallback.');
-      return MOCK_SEARCH_RESULTS.filter((r) => {
-        const matchesQ = !query || r.snippet.toLowerCase().includes(query.toLowerCase()) || r.meetingTitle.toLowerCase().includes(query.toLowerCase());
-        const matchesType = !eventType || r.eventType === eventType;
-        return matchesQ && matchesType;
-      });
-    }
+    const params = new URLSearchParams();
+    if (query) params.append('q', query);
+    if (eventType) params.append('event_type', eventType);
+    return requestJson<SearchResult[]>(`${this.baseUrl}/api/search?${params.toString()}`);
   }
 
   /**
-   * Connect WebSocket for live recording streaming and event broadcasting.
+   * Poll meeting until processing completes or fails.
    */
+  async waitForMeetingProcessing(
+    meetingId: string,
+    onUpdate?: (meeting: Meeting) => void,
+    intervalMs = 3000,
+    timeoutMs = 30 * 60 * 1000,
+  ): Promise<Meeting> {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const meeting = await this.getMeeting(meetingId);
+      if (!meeting) throw new ApiError('Meeting not found', 404);
+      onUpdate?.(meeting);
+      if (meeting.status === 'completed' || meeting.status === 'failed') {
+        return meeting;
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new ApiError('Processing timed out', 408);
+  }
+
   connectWebSocket(
     meetingId: string,
-    onMessage: (msg: any) => void,
-    onError?: (err: any) => void
+    onMessage: (msg: Record<string, unknown>) => void,
+    onError?: (err: Event) => void,
   ): WebSocket {
     const ws = new WebSocket(`${WS_BASE_URL}/ws/meetings/${meetingId}`);
 
@@ -148,3 +235,4 @@ class SSMIApiClient {
 }
 
 export const apiClient = new SSMIApiClient();
+export { ApiError };

@@ -4,6 +4,7 @@ import styles from './ActionItemCard.module.css';
 
 interface ActionItemCardProps {
   item: ActionItem;
+  onJumpToTime?: (seconds: number) => void;
 }
 
 const priorityColors = {
@@ -18,7 +19,7 @@ const ownerLabels = {
   UNKNOWN: 'TBD',
 };
 
-export default function ActionItemCard({ item }: ActionItemCardProps) {
+export default function ActionItemCard({ item, onJumpToTime }: ActionItemCardProps) {
   function formatDeadline(d?: string) {
     if (!d) return null;
     return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
@@ -59,7 +60,12 @@ export default function ActionItemCard({ item }: ActionItemCardProps) {
             {Math.round(item.confidence * 100)}% confidence
           </span>
           {item.evidenceTimestamp !== undefined && (
-            <button className={`btn btn-ghost btn-sm ${styles.jumpBtn}`}>
+            <button
+              type="button"
+              className={`btn btn-ghost btn-sm ${styles.jumpBtn}`}
+              onClick={() => onJumpToTime?.(item.evidenceTimestamp!)}
+              title="Play audio at this moment"
+            >
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <polygon points="5 3 19 12 5 21 5 3" />
               </svg>

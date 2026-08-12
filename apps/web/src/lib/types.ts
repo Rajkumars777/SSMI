@@ -38,6 +38,7 @@ export interface Meeting {
   sentiment?: SentimentType;
   purchaseIntent?: PurchaseIntent;
   tags?: string[];
+  processingError?: string;
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

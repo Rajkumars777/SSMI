@@ -1,6 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { loadSettings, saveSettings, DEFAULT_SETTINGS, type SSMISettings } from '@/lib/settings';
+import {
+  ensureMicPermission,
+  listAudioInputDevices,
+  isHeadsetLikeLabel,
+  type AudioInputDevice,
+} from '@/lib/audioCapture';
 import styles from './page.module.css';
 
 const sections = [
@@ -50,17 +57,61 @@ const sections = [
 
 export default function SettingsPage() {
   const [bookmarkGesture, setBookmarkGesture] = useState('whistle_single');
+  const [customBookmarkKeyword, setCustomBookmarkKeyword] = useState('Bookmark');
   const [stopGesture, setStopGesture] = useState('whistle_double');
+  const [customStopKeyword, setCustomStopKeyword] = useState('Stop Meeting');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.95);
   const [defaultMode, setDefaultMode] = useState<'fast' | 'accurate'>('accurate');
   const [sttModel, setSttModel] = useState('large-v3-turbo');
+  const [preferredMicDeviceId, setPreferredMicDeviceId] = useState('');
+  const [captureTabAudio, setCaptureTabAudio] = useState(false);
+  const [micDevices, setMicDevices] = useState<AudioInputDevice[]>([]);
   const [activeSection, setActiveSection] = useState('voice');
   const [saved, setSaved] = useState(false);
 
+  useEffect(() => {
+    const initial = loadSettings();
+    setBookmarkGesture(initial.bookmarkGesture);
+    setCustomBookmarkKeyword(initial.customBookmarkKeyword);
+    setStopGesture(initial.stopGesture);
+    setCustomStopKeyword(initial.customStopKeyword);
+    setConfidenceThreshold(initial.confidenceThreshold);
+    setDefaultMode(initial.defaultMode);
+    setSttModel(initial.sttModel);
+    setPreferredMicDeviceId(initial.preferredMicDeviceId || '');
+    setCaptureTabAudio(!!initial.captureTabAudio);
+  }, []);
+
+  useEffect(() => {
+    async function loadDevices() {
+      const permitted = await ensureMicPermission();
+      if (!permitted) return;
+      setMicDevices(await listAudioInputDevices());
+    }
+    loadDevices();
+    navigator.mediaDevices?.addEventListener('devicechange', loadDevices);
+    return () => navigator.mediaDevices?.removeEventListener('devicechange', loadDevices);
+  }, []);
+
   function handleSave() {
+    const updated: SSMISettings = {
+      ...loadSettings(),
+      bookmarkGesture,
+      customBookmarkKeyword: customBookmarkKeyword.trim() || 'Bookmark',
+      stopGesture,
+      customStopKeyword: customStopKeyword.trim() || 'Stop Meeting',
+      confidenceThreshold,
+      defaultMode,
+      sttModel,
+      preferredMicDeviceId,
+      captureTabAudio,
+    };
+
+    saveSettings(updated);
     setSaved(true);
     setTimeout(() => setSaved(false), 2500);
   }
+
 
   return (
     <div className={`page-wrapper ${styles.root}`}>
@@ -106,6 +157,7 @@ export default function SettingsPage() {
                         { val: 'tongue_click', label: 'Tongue Click', desc: 'Works well in quiet environments' },
                         { val: 'keyword_bookmark', label: 'Say "Bookmark"', desc: 'Voice keyword via local STT' },
                         { val: 'keyword_mark', label: 'Say "Mark This"', desc: 'Alternative voice keyword' },
+                        { val: 'custom_keyword', label: 'Custom Spoken Keyword', desc: 'Manually set your custom voice phrase' },
                       ].map((opt) => (
                         <label key={opt.val} className={`${styles.gestureOption} ${bookmarkGesture === opt.val ? styles.gestureActive : ''}`}>
                           <input
@@ -128,6 +180,31 @@ export default function SettingsPage() {
                         </label>
                       ))}
                     </div>
+
+                    {(bookmarkGesture === 'custom_keyword' || bookmarkGesture.startsWith('keyword_')) && (
+                      <div className={styles.customKeywordBox}>
+                        <label className={styles.customLabel}>Manually Set Voice Keyword / Phrase:</label>
+                        <div className={styles.customInputGroup}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent-blue)', flexShrink: 0 }}>
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                          </svg>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="e.g. Bookmark, Mark this, Flag item, Important"
+                            value={customBookmarkKeyword}
+                            onChange={(e) => setCustomBookmarkKeyword(e.target.value)}
+                            id="custom-bookmark-keyword"
+                          />
+                        </div>
+                        <span className={styles.customHint}>
+                          Local STT continuously monitors live speech for: <strong>"{customBookmarkKeyword || 'Bookmark'}"</strong>
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="divider" />
@@ -139,6 +216,7 @@ export default function SettingsPage() {
                       {[
                         { val: 'whistle_double', label: 'Double Whistle', desc: 'Recommended — distinct from bookmark' },
                         { val: 'keyword_stop', label: 'Say "Stop Meeting"', desc: 'Voice keyword via local STT' },
+                        { val: 'custom_keyword', label: 'Custom Spoken Keyword', desc: 'Manually set your custom stop phrase' },
                       ].map((opt) => (
                         <label key={opt.val} className={`${styles.gestureOption} ${stopGesture === opt.val ? styles.gestureActive : ''}`}>
                           <input
@@ -161,6 +239,70 @@ export default function SettingsPage() {
                         </label>
                       ))}
                     </div>
+
+                    {(stopGesture === 'custom_keyword' || stopGesture === 'keyword_stop') && (
+                      <div className={styles.customKeywordBox}>
+                        <label className={styles.customLabel}>Manually Set Stop Voice Keyword / Phrase:</label>
+                        <div className={styles.customInputGroup}>
+                          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent-red)', flexShrink: 0 }}>
+                            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                            <line x1="12" y1="19" x2="12" y2="23" />
+                            <line x1="8" y1="23" x2="16" y2="23" />
+                          </svg>
+                          <input
+                            type="text"
+                            className="input"
+                            placeholder="e.g. Stop meeting, Finish recording, End call"
+                            value={customStopKeyword}
+                            onChange={(e) => setCustomStopKeyword(e.target.value)}
+                            id="custom-stop-keyword"
+                          />
+                        </div>
+                        <span className={styles.customHint}>
+                          Local STT continuously monitors live speech for: <strong>"{customStopKeyword || 'Stop Meeting'}"</strong>
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+
+                  <div className="divider" />
+
+                  <div className={styles.formGroup}>
+                    <label className={styles.label}>Microphone (Live Meetings)</label>
+                    <p className={styles.hint}>
+                      Choose your headset microphone for live recording. SSMI auto-selects headset devices when detected.
+                    </p>
+                    <select
+                      className="input"
+                      value={preferredMicDeviceId}
+                      onChange={(e) => setPreferredMicDeviceId(e.target.value)}
+                      id="preferred-mic"
+                    >
+                      <option value="">System default</option>
+                      {micDevices.map((d) => (
+                        <option key={d.deviceId} value={d.deviceId}>
+                          {d.label}{isHeadsetLikeLabel(d.label) ? ' 🎧' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className={styles.formGroup}>
+                    <label className={styles.checkboxRow}>
+                      <input
+                        type="checkbox"
+                        checked={captureTabAudio}
+                        onChange={(e) => setCaptureTabAudio(e.target.checked)}
+                      />
+                      <span>
+                        Also capture system / call audio
+                        <small className={styles.hint} style={{ display: 'block', marginTop: 4 }}>
+                          Required with headphones — share your meeting screen/tab with &quot;Share system audio&quot; enabled.
+                        </small>
+                      </span>
+                    </label>
                   </div>
 
                   <div className="divider" />

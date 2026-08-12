@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 from .classifiers import detect_candidate_events
 from .evidence_validator import EvidenceValidator
+from services.api.fastapi.database.models import EventType
 
 
 class TimelineEngine:
@@ -29,7 +30,7 @@ class TimelineEngine:
             )
             if closest_seg:
                 candidate_events.append({
-                    "type": "COMMITMENT",
+                    "type": EventType.COMMITMENT,
                     "title": "Voice Bookmarked Segment",
                     "description": closest_seg["text"],
                     "start_time": closest_seg["start_time"],

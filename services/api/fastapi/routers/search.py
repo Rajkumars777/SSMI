@@ -2,14 +2,15 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
+from ..routing import CamelCaseAPIRoute
 from ..database.db import get_db
 from ..database.models import Meeting, MeetingEvent, EventType
 from ..schemas import SearchResultSchema
 
-router = APIRouter(prefix="/api/search", tags=["search"])
+router = APIRouter(prefix="/api/search", tags=["search"], route_class=CamelCaseAPIRoute)
 
 
-@router.get("", response_model=List[SearchResultSchema])
+@router.get("", response_model=List[SearchResultSchema], response_model_by_alias=False)
 async def search_meetings(
     q: Optional[str] = Query(None, description="Search query string"),
     event_type: Optional[EventType] = Query(None, description="Filter by event type"),

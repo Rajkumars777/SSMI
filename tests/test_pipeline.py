@@ -35,3 +35,19 @@ def test_timeline_engine():
     timeline = TimelineEngine.generate_timeline(segments, bookmarks=[15.0])
     assert len(timeline) >= 2
     assert any(evt["type"] == EventType.BUDGET for evt in timeline)
+
+
+def test_qwen_summarizer():
+    """Verify QwenSummarizer structured output generation."""
+    from services.summarization.summarizer import QwenSummarizer
+    summarizer = QwenSummarizer()
+    segments = [
+        {"speaker": "CUSTOMER", "text": "We have an annual budget of $120,000 for this software."},
+        {"speaker": "SALESPERSON", "text": "We can offer a 15% discount if you sign this month."},
+    ]
+    res = summarizer.generate_summary_and_actions("Acme Corp", "Acme", segments, [])
+    assert "summary" in res
+    assert "action_items" in res
+    assert res["summary"]["objective"] is not None
+    assert len(res["action_items"]) > 0
+

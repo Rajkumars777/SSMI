@@ -31,7 +31,9 @@ export default function Navbar() {
             </svg>
           </span>
           <span className={styles.logoText}>SSMI</span>
+          <span className={styles.brandBadge}>PRO AI</span>
         </Link>
+
 
         <div className={styles.links}>
           {navLinks.map((link) => (

@@ -97,10 +97,11 @@ class MeetingResponseSchema(BaseModel):
     sentiment: Optional[SentimentType] = None
     purchaseIntent: Optional[PurchaseIntent] = Field(None, alias="purchase_intent")
     tags: List[str] = []
+    processingError: Optional[str] = Field(None, alias="processing_error")
     summary: Optional[MeetingSummarySchema] = None
-    timeline: Optional[List[TimelineEventSchema]] = None
+    timeline: Optional[List[TimelineEventSchema]] = Field(None, alias="events")
     actionItems: Optional[List[ActionItemSchema]] = Field(None, alias="action_items")
-    transcript: Optional[List[TranscriptSegmentSchema]] = None
+    transcript: Optional[List[TranscriptSegmentSchema]] = Field(None, alias="transcript_segments")
 
     class Config:
         from_attributes = True
@@ -131,5 +132,23 @@ class DashboardStatsSchema(BaseModel):
 
 class VoiceGestureConfigSchema(BaseModel):
     bookmarkGesture: str = "whistle_single"
+    customBookmarkKeyword: str = "Bookmark"
     stopGesture: str = "whistle_double"
+    customStopKeyword: str = "Stop Meeting"
     confidenceThreshold: float = 0.95
+
+
+class LiveTranscriptLineSchema(BaseModel):
+    speaker: str
+    text: str
+    startTime: float = Field(0.0, alias="start_time")
+
+    class Config:
+        populate_by_name = True
+
+
+class FinalizeLiveMeetingSchema(BaseModel):
+    transcript: List[LiveTranscriptLineSchema]
+    duration: float = 0.0
+    bookmarks: List[float] = []
+

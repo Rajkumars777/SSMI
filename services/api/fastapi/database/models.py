@@ -14,9 +14,17 @@ from sqlalchemy import (
     JSON,
 )
 from sqlalchemy.orm import relationship
-from pgvector.sqlalchemy import Vector
 from .db import Base
 import enum
+
+# pgvector is optional — used only when PostgreSQL + pgvector extension is available
+try:
+    from pgvector.sqlalchemy import Vector as PGVector
+    HAS_PGVECTOR = True
+except ImportError:
+    HAS_PGVECTOR = False
+    PGVector = None
+
 
 
 class SpeakerType(str, enum.Enum):
@@ -119,13 +127,22 @@ class Meeting(Base):
     purchase_intent = Column(SQLEnum(PurchaseIntent), nullable=True)
     tags = Column(JSON, default=list)  # list of strings
     audio_path = Column(String(512), nullable=True)
+    processing_error = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="meetings")
     customer = relationship("Customer", back_populates="meetings")
-    transcript_segments = relationship("TranscriptSegment", back_populates="meeting", cascade="all, delete-orphan")
-    events = relationship("MeetingEvent", back_populates="meeting", cascade="all, delete-orphan")
-    action_items = relationship("ActionItem", back_populates="meeting", cascade="all, delete-orphan")
-    summary = relationship("MeetingSummary", back_populates="meeting", uselist=False, cascade="all, delete-orphan")
+    transcript_segments = relationship(
+        "TranscriptSegment", back_populates="meeting", cascade="all, delete-orphan", lazy="selectin"
+    )
+    events = relationship(
+        "MeetingEvent", back_populates="meeting", cascade="all, delete-orphan", lazy="selectin"
+    )
+    action_items = relationship(
+        "ActionItem", back_populates="meeting", cascade="all, delete-orphan", lazy="selectin"
+    )
+    summary = relationship(
+        "MeetingSummary", back_populates="meeting", uselist=False, cascade="all, delete-orphan", lazy="selectin"
+    )
     embeddings = relationship("Embedding", back_populates="meeting", cascade="all, delete-orphan")
 
 
@@ -199,6 +216,23 @@ class MeetingSummary(Base):
     meeting = relationship("Meeting", back_populates="summary")
 
 
+from sqlalchemy.types import TypeDecorator
+
+class SafeVector(TypeDecorator):
+    """Uses pgvector Vector(1536) on PostgreSQL and JSON/Text on SQLite."""
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            try:
+                from pgvector.sqlalchemy import Vector
+                return dialect.type_descriptor(Vector(1536))
+            except ImportError:
+                pass
+        return dialect.type_descriptor(JSON())
+
+
 class Embedding(Base):
     __tablename__ = "embeddings"
 
@@ -207,6 +241,7 @@ class Embedding(Base):
     content = Column(Text, nullable=False)
     event_type = Column(SQLEnum(EventType), nullable=True)
     start_time = Column(Float, nullable=True)
-    embedding_vector = Column(Vector(1536), nullable=True)  # BGE-M3 or OpenAI compatibility dimension
+    embedding_vector = Column(SafeVector, nullable=True)  # BGE-M3 or OpenAI compatibility dimension
 
     meeting = relationship("Meeting", back_populates="embeddings")
+

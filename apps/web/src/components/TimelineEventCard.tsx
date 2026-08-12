@@ -6,6 +6,7 @@ interface TimelineEventCardProps {
   event: TimelineEvent;
   isActive?: boolean;
   onClick?: () => void;
+  onJumpToTime?: (seconds: number) => void;
 }
 
 function ImportanceIndicator({ level }: { level: number }) {
@@ -24,7 +25,7 @@ function ImportanceIndicator({ level }: { level: number }) {
   );
 }
 
-export default function TimelineEventCard({ event, isActive, onClick }: TimelineEventCardProps) {
+export default function TimelineEventCard({ event, isActive, onClick, onJumpToTime }: TimelineEventCardProps) {
   const color = EVENT_TYPE_COLORS[event.type] || '#4f8ef7';
   const label = EVENT_TYPE_LABELS[event.type] || event.type;
 
@@ -71,7 +72,15 @@ export default function TimelineEventCard({ event, isActive, onClick }: Timeline
               {Math.round(event.confidence * 100)}% confidence
             </span>
           </div>
-          <button className={`btn btn-ghost btn-sm ${styles.jumpBtn}`}>
+          <button
+            type="button"
+            className={`btn btn-ghost btn-sm ${styles.jumpBtn}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onJumpToTime?.(event.startTime);
+            }}
+            title="Play audio at this moment"
+          >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
               <polygon points="5 3 19 12 5 21 5 3" />
             </svg>
