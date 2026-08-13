@@ -1480,4 +1480,4 @@ Grafana
 pytest
 ```
 
-**Target cost: ₹0 in API/service fees, with compute limited by your own hardware.**
+**Target cost: ₹0 in API/service fees, with compute limited by your own hardware.***
