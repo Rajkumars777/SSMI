@@ -1,96 +1,164 @@
-import os
+"""
+Meeting Summarizer — SSMI
+===========================
+Uses Qwen2.5:14b (via Ollama/vLLM) to extract structured intelligence from
+meeting transcripts and generate professional follow-up emails.
+
+Two-stage design:
+  1. LLM path  : Calls Qwen2.5:14b via the OpenAI-compatible Ollama API to
+                 produce a rich, context-aware JSON summary.
+  2. Fallback  : If Ollama is unreachable or the call fails, a deterministic
+                 transcript-analysis fallback extracts key points, decisions,
+                 and action items directly from the timeline events.
+
+Environment variables:
+  VLLM_ENDPOINT      : Ollama/vLLM base URL (default: http://localhost:11434/v1)
+  VLLM_MODEL_NAME    : Model to call (default: qwen2.5:14b)
+  SUMMARIZER_TIMEOUT : HTTP timeout in seconds (default: 120)
+"""
+
 import json
+import os
 import re
 import socket
-from typing import List, Dict, Any
-from pydantic import BaseModel, Field
-from services.api.fastapi.database.models import SentimentType, PurchaseIntent, EventType
+from typing import Any, Dict, List
 
+from pydantic import BaseModel, Field
+
+from services.api.fastapi.database.models import EventType, PurchaseIntent, SentimentType
+
+# ---------------------------------------------------------------------------
+# Optional OpenAI client (used to talk to the Ollama OpenAI-compat API)
+# ---------------------------------------------------------------------------
 try:
     from openai import OpenAI
     HAS_OPENAI = True
 except ImportError:
     HAS_OPENAI = False
 
-# How long (seconds) to wait for the LLM API before falling back to deterministic.
-# 120 sec gives 14B model on CPU enough time for first-token generation.
+# How long to wait for the LLM before falling back to deterministic output.
+# 120 seconds gives the 14B model on CPU enough time for its first token.
 SUMMARIZER_TIMEOUT = int(os.getenv("SUMMARIZER_TIMEOUT", "120"))
 
 
+# ---------------------------------------------------------------------------
+# Connectivity helper
+# ---------------------------------------------------------------------------
+
 def _ollama_is_reachable(endpoint: str, probe_timeout: float = 3.0) -> bool:
-    """Quick TCP probe to check if Ollama/vLLM is listening before sending a request."""
+    """
+    Quick TCP probe to check if Ollama/vLLM is actually listening.
+
+    Avoids wasting 120 seconds on a connection timeout when the server
+    is simply not running — fails fast and falls back to deterministic output.
+    """
     try:
         from urllib.parse import urlparse
         parsed = urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        port = parsed.port or 80
+        host   = parsed.hostname or "localhost"
+        port   = parsed.port or 80
         with socket.create_connection((host, port), timeout=probe_timeout):
             return True
     except OSError:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Pydantic schemas for LLM output validation
+# ---------------------------------------------------------------------------
+
 class ActionItemSchema(BaseModel):
-    title: str
-    description: str = ""
-    owner: str = "SALESPERSON"
-    deadline: str = "TBD"
-    priority: str = "high"
+    """Schema for a single action item returned by the LLM."""
+    title:       str
+    description: str  = ""
+    owner:       str  = "SALESPERSON"
+    deadline:    str  = "TBD"
+    priority:    str  = "high"
 
 
 class SummaryOutputSchema(BaseModel):
-    objective: str
-    overview: str
-    key_points: List[str] = Field(default_factory=list)
-    decisions: List[str] = Field(default_factory=list)
-    risks: List[str] = Field(default_factory=list)
-    customer_sentiment: str = "positive"
-    purchase_intent: str = "very_high"
-    next_steps: List[str] = Field(default_factory=list)
-    action_items: List[ActionItemSchema] = Field(default_factory=list)
+    """Schema for the full structured meeting summary returned by the LLM."""
+    objective:         str
+    overview:          str
+    key_points:        List[str]           = Field(default_factory=list)
+    decisions:         List[str]           = Field(default_factory=list)
+    risks:             List[str]           = Field(default_factory=list)
+    customer_sentiment: str                = "positive"
+    purchase_intent:   str                 = "very_high"
+    next_steps:        List[str]           = Field(default_factory=list)
+    action_items:      List[ActionItemSchema] = Field(default_factory=list)
 
 
 class FollowUpEmailOutputSchema(BaseModel):
+    """Schema for the follow-up email returned by the LLM."""
     subject: str
-    body: str
+    body:    str
     to_name: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Main summarizer class
+# ---------------------------------------------------------------------------
+
 class QwenSummarizer:
-    """Qwen 14B Instruct served via vLLM / Ollama for structured meeting intelligence summarization."""
+    """
+    Generates structured meeting summaries and follow-up emails using Qwen 14B.
+
+    Connects to Ollama via the OpenAI-compatible /v1/chat/completions endpoint.
+    Falls back to deterministic logic if Ollama is unavailable.
+    """
 
     def __init__(self, vllm_endpoint: str = None):
         self.vllm_endpoint = vllm_endpoint or os.getenv("VLLM_ENDPOINT", "http://localhost:11434/v1")
-        self.model_name = os.getenv("VLLM_MODEL_NAME", "qwen2.5:14b")
-        self.client = None
+        self.model_name    = os.getenv("VLLM_MODEL_NAME", "qwen2.5:14b")
+        self.client        = None
+
         if HAS_OPENAI:
             try:
                 # Pass explicit timeout so we never hang waiting for Ollama
                 self.client = OpenAI(
-                    base_url=self.vllm_endpoint,
-                    api_key="not-needed",
-                    timeout=SUMMARIZER_TIMEOUT,
+                    base_url = self.vllm_endpoint,
+                    api_key  = "not-needed",   # Ollama does not require auth
+                    timeout  = SUMMARIZER_TIMEOUT,
                 )
             except Exception as e:
                 print(f"[Warning] Could not initialize OpenAI client ({e})")
 
     def generate_summary_and_actions(
         self,
-        customer_name: str,
-        customer_company: str,
+        customer_name:      str,
+        customer_company:   str,
         transcript_segments: List[Dict[str, Any]],
-        timeline_events: List[Dict[str, Any]]
+        timeline_events:    List[Dict[str, Any]],
     ) -> Dict[str, Any]:
-        """Generates structured summary and action items from meeting transcript & timeline."""
+        """
+        Generate a structured meeting summary and action items.
 
-        full_transcript = "\n".join([f"{s.get('speaker', 'UNKNOWN')}: {s.get('text', '')}" for s in transcript_segments])
+        Tries Qwen2.5:14b via Ollama first; falls back to deterministic
+        transcript analysis if LLM is unavailable or fails.
 
+        Args:
+          customer_name      : Full name of the customer.
+          customer_company   : Customer's company name.
+          transcript_segments: List of {speaker, text} dicts from STT/diarizer.
+          timeline_events    : List of detected business events from TimelineEngine.
+
+        Returns:
+          Dict with keys 'summary' (dict) and 'action_items' (list of dicts).
+        """
+        # Build the full transcript text for the LLM prompt
+        full_transcript = "\n".join(
+            f"{s.get('speaker', 'UNKNOWN')}: {s.get('text', '')}"
+            for s in transcript_segments
+        )
+
+        # ── LLM path ─────────────────────────────────────────────────────────
         if self.client is not None:
-            # Fast TCP probe — skip LLM entirely if Ollama isn't running
             if not _ollama_is_reachable(self.vllm_endpoint, probe_timeout=3.0):
                 print(f"[Summarizer] Ollama/vLLM not reachable at {self.vllm_endpoint} — using deterministic fallback.")
             else:
                 try:
+                    # System prompt instructs the model to output only valid JSON
                     system_prompt = (
                         "You are an expert Sales AI Assistant. Analyze the customer meeting transcript and extract concise intelligence.\n"
                         "Respond ONLY in valid JSON matching this exact structure:\n"
@@ -106,106 +174,129 @@ class QwenSummarizer:
                         '  "action_items": [{"title": "Task", "description": "Details", "owner": "SALESPERSON"|"CUSTOMER", "deadline": "YYYY-MM-DD", "priority": "high"|"medium"|"low"}]\n'
                         "}"
                     )
-
                     user_prompt = f"Customer: {customer_name} ({customer_company})\n\nTRANSCRIPT:\n{full_transcript}"
 
                     response = self.client.chat.completions.create(
-                        model=self.model_name,
-                        messages=[
+                        model       = self.model_name,
+                        messages    = [
                             {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
+                            {"role": "user",   "content": user_prompt},
                         ],
-                        temperature=0.1,
+                        temperature = 0.1,       # Low temperature for more deterministic output
                         # Note: response_format is NOT passed — Ollama's OpenAI-compat
                         # layer doesn't support json_object mode; JSON is enforced via
                         # the system prompt instead.
-                        timeout=SUMMARIZER_TIMEOUT,
+                        timeout     = SUMMARIZER_TIMEOUT,
                     )
 
+                    # Parse the raw response — handle both raw JSON and markdown code blocks
                     raw_content = response.choices[0].message.content or ""
-                    json_match = re.search(r"(\{[\s\S]*\})", raw_content)
+                    json_match  = re.search(r"(\{[\s\S]*\})", raw_content)
                     if json_match:
                         clean_content = json_match.group(1)
                     else:
                         clean_content = re.sub(r"^```json\s*|\s*```$", "", raw_content.strip(), flags=re.MULTILINE)
 
-                    parsed_json = json.loads(clean_content)
-                    parsed_data = SummaryOutputSchema.model_validate(parsed_json)
+                    parsed_data = SummaryOutputSchema.model_validate(json.loads(clean_content))
 
-                    # Map sentiment & intent strings to enums
+                    # Map string values from the LLM back to our enum types
                     sentiment_map = {
                         "positive": SentimentType.POSITIVE,
-                        "neutral": SentimentType.NEUTRAL,
+                        "neutral":  SentimentType.NEUTRAL,
                         "negative": SentimentType.NEGATIVE,
-                        "mixed": SentimentType.MIXED
+                        "mixed":    SentimentType.MIXED,
                     }
                     intent_map = {
                         "very_high": PurchaseIntent.VERY_HIGH,
-                        "high": PurchaseIntent.HIGH,
-                        "medium": PurchaseIntent.MEDIUM,
-                        "low": PurchaseIntent.LOW,
-                        "none": PurchaseIntent.NONE
+                        "high":      PurchaseIntent.HIGH,
+                        "medium":    PurchaseIntent.MEDIUM,
+                        "low":       PurchaseIntent.LOW,
+                        "none":      PurchaseIntent.NONE,
                     }
 
                     summary = {
-                        "objective": parsed_data.objective,
-                        "overview": parsed_data.overview,
-                        "key_points": parsed_data.key_points,
-                        "decisions": parsed_data.decisions,
-                        "risks": parsed_data.risks,
+                        "objective":          parsed_data.objective,
+                        "overview":           parsed_data.overview,
+                        "key_points":         parsed_data.key_points,
+                        "decisions":          parsed_data.decisions,
+                        "risks":              parsed_data.risks,
                         "customer_sentiment": sentiment_map.get(str(parsed_data.customer_sentiment).lower(), SentimentType.POSITIVE),
-                        "purchase_intent": intent_map.get(str(parsed_data.purchase_intent).lower(), PurchaseIntent.VERY_HIGH),
-                        "next_steps": parsed_data.next_steps,
+                        "purchase_intent":    intent_map.get(str(parsed_data.purchase_intent).lower(), PurchaseIntent.VERY_HIGH),
+                        "next_steps":         parsed_data.next_steps,
                     }
 
-                    action_items = []
-                    for idx, act in enumerate(parsed_data.action_items):
-                        action_items.append({
-                            "title": act.title,
-                            "description": act.description,
-                            "owner": act.owner,
-                            "deadline": act.deadline,
-                            "confidence": 0.95,
+                    # Assign evidence timestamps linearly (LLM doesn't know exact timestamps)
+                    action_items = [
+                        {
+                            "title":              act.title,
+                            "description":        act.description,
+                            "owner":              act.owner,
+                            "deadline":           act.deadline,
+                            "confidence":         0.95,
                             "evidence_timestamp": 60.0 * (idx + 1),
-                            "priority": act.priority,
-                            "completed": False,
-                        })
+                            "priority":           act.priority,
+                            "completed":          False,
+                        }
+                        for idx, act in enumerate(parsed_data.action_items)
+                    ]
 
                     print("[Summarizer] Successfully extracted intelligence with Qwen 14B!")
-                    return {
-                        "summary": summary,
-                        "action_items": action_items,
-                    }
+                    return {"summary": summary, "action_items": action_items}
+
                 except Exception as e:
                     print(f"[Warning] LLM summarization call failed ({e}). Using transcript intelligence fallback.")
 
-        # Intelligence extraction fallback based on actual transcript segments
+        # ── Deterministic fallback ────────────────────────────────────────────
+        return self._deterministic_summary(
+            customer_name, customer_company, full_transcript, transcript_segments, timeline_events
+        )
+
+    @staticmethod
+    def _deterministic_summary(
+        customer_name:      str,
+        customer_company:   str,
+        full_transcript:    str,
+        transcript_segments: List[Dict[str, Any]],
+        timeline_events:    List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Build a summary from transcript text and timeline events — no LLM required.
+
+        Extracts sentiment and purchase intent from simple keyword matching,
+        uses the first few transcript segments as key points, and derives
+        action items from DECISION/COMMITMENT/ACTION_ITEM timeline events.
+        """
         full_lower = full_transcript.lower()
+
+        # Sentiment: keyword signals override the default POSITIVE
         sentiment = SentimentType.POSITIVE
-        intent = PurchaseIntent.HIGH
+        intent    = PurchaseIntent.HIGH
 
         if any(w in full_lower for w in ("too expensive", "doubt", "concern", "worried", "risk")):
             sentiment = SentimentType.MIXED
         if any(w in full_lower for w in ("not interested", "no budget", "cancel")):
-            intent = PurchaseIntent.LOW
+            intent    = PurchaseIntent.LOW
             sentiment = SentimentType.NEGATIVE
         if any(w in full_lower for w in ("sign this month", "ready to buy", "purchase", "go ahead")):
             intent = PurchaseIntent.VERY_HIGH
 
-        extracted_key_points = []
-        for seg in transcript_segments:
-            txt = seg.get("text", "").strip()
-            if len(txt) > 20 and len(extracted_key_points) < 6:
-                extracted_key_points.append(txt)
+        # Use the first 6 non-trivial transcript segments as key points
+        extracted_key_points = [
+            seg["text"].strip()
+            for seg in transcript_segments
+            if len(seg.get("text", "").strip()) > 20
+        ][:6]
 
         if not extracted_key_points:
+            # Nothing useful in the transcript — produce minimal but valid output
             extracted_key_points = [
                 f"Discussion with {customer_name} from {customer_company}",
                 "Review of requirements, pricing, and next steps",
             ]
             sentiment = SentimentType.NEUTRAL
-            intent = PurchaseIntent.MEDIUM
+            intent    = PurchaseIntent.MEDIUM
 
+        # Extract decisions and risks from timeline events
         extracted_decisions = [
             evt.get("title", "")
             for evt in timeline_events
@@ -224,74 +315,77 @@ class QwenSummarizer:
                 f"Meeting with {customer_name} from {customer_company} covering {len(transcript_segments)} "
                 f"discussion segments and {len(timeline_events)} detected business events."
             ),
-            "key_points": extracted_key_points,
-            "decisions": extracted_decisions or ["No explicit decisions captured — review transcript for commitments."],
-            "risks": extracted_risks or ["No major risks flagged in transcript."],
+            "key_points":         extracted_key_points,
+            "decisions":          extracted_decisions or ["No explicit decisions captured — review transcript for commitments."],
+            "risks":              extracted_risks or ["No major risks flagged in transcript."],
             "customer_sentiment": sentiment,
-            "purchase_intent": intent,
+            "purchase_intent":    intent,
             "next_steps": [
                 "Review extracted action items and assign owners",
                 "Follow up with customer on open pricing or timeline questions",
             ],
         }
 
-        action_items = []
-        for idx, evt in enumerate(timeline_events[:5]):
-            if evt.get("type") in (EventType.ACTION_ITEM, EventType.COMMITMENT, EventType.DECISION):
-                action_items.append({
-                    "title": evt.get("title", "Follow up on discussion point"),
-                    "description": evt.get("description", ""),
-                    "owner": evt.get("speaker", "SALESPERSON"),
-                    "deadline": "TBD",
-                    "confidence": float(evt.get("confidence", 0.9)),
-                    "evidence_timestamp": float(evt.get("start_time", 60.0 * (idx + 1))),
-                    "priority": "high" if evt.get("importance", 3) >= 4 else "medium",
-                    "completed": False,
-                })
+        # Build action items from timeline events of actionable types
+        action_items = [
+            {
+                "title":              evt.get("title", "Follow up on discussion point"),
+                "description":        evt.get("description", ""),
+                "owner":              evt.get("speaker", "SALESPERSON"),
+                "deadline":           "TBD",
+                "confidence":         float(evt.get("confidence", 0.9)),
+                "evidence_timestamp": float(evt.get("start_time", 60.0 * (idx + 1))),
+                "priority":           "high" if evt.get("importance", 3) >= 4 else "medium",
+                "completed":          False,
+            }
+            for idx, evt in enumerate(timeline_events[:5])
+            if evt.get("type") in (EventType.ACTION_ITEM, EventType.COMMITMENT, EventType.DECISION)
+        ]
 
+        # Always ensure at least one action item
         if not action_items:
             action_items = [{
-                "title": f"Send follow-up summary to {customer_name}",
-                "description": "Share meeting recap and proposed next steps.",
-                "owner": "SALESPERSON",
-                "deadline": "TBD",
-                "confidence": 0.9,
+                "title":              f"Send follow-up summary to {customer_name}",
+                "description":        "Share meeting recap and proposed next steps.",
+                "owner":              "SALESPERSON",
+                "deadline":           "TBD",
+                "confidence":         0.9,
                 "evidence_timestamp": 60.0,
-                "priority": "medium",
-                "completed": False,
+                "priority":           "medium",
+                "completed":          False,
             }]
 
-        return {
-            "summary": summary,
-            "action_items": action_items,
-        }
+        return {"summary": summary, "action_items": action_items}
 
     def generate_follow_up_email(
         self,
-        customer_name: str,
+        customer_name:   str,
         customer_company: str,
-        meeting_title: str,
-        meeting_date: str,
-        summary: Dict[str, Any],
-        action_items: List[Dict[str, Any]],
+        meeting_title:   str,
+        meeting_date:    str,
+        summary:         Dict[str, Any],
+        action_items:    List[Dict[str, Any]],
     ) -> Dict[str, str]:
-        """Generates a professional post-meeting follow-up email from summary + action items."""
+        """
+        Generate a professional post-meeting follow-up email.
 
+        Tries Qwen2.5:14b via Ollama for a contextually rich email.
+        Falls back to a well-structured template if LLM is unavailable.
+
+        Returns:
+          Dict with keys {subject, body, toName}.
+        """
         key_points = summary.get("key_points") or summary.get("keyPoints") or []
-        decisions = summary.get("decisions") or []
+        decisions  = summary.get("decisions") or []
         next_steps = summary.get("next_steps") or summary.get("nextSteps") or []
-        overview = summary.get("overview") or ""
+        overview   = summary.get("overview") or ""
 
-        action_lines = []
-        for item in action_items:
-            owner = str(item.get("owner", "SALESPERSON")).replace("_", " ").title()
-            deadline = item.get("deadline") or "TBD"
-            title = item.get("title", "")
-            desc = item.get("description", "")
-            line = f"- {title} (Owner: {owner}, Due: {deadline})"
-            if desc:
-                line += f" — {desc}"
-            action_lines.append(line)
+        # Format action items for the prompt context block
+        action_lines = [
+            f"- {item.get('title', '')} (Owner: {str(item.get('owner', 'SALESPERSON')).replace('_', ' ').title()}, Due: {item.get('deadline') or 'TBD'})"
+            + (f" — {item.get('description', '')}" if item.get("description") else "")
+            for item in action_items
+        ]
 
         context_block = (
             f"Customer: {customer_name} ({customer_company})\n"
@@ -304,6 +398,7 @@ class QwenSummarizer:
             f"Action Items:\n" + ("\n".join(action_lines) if action_lines else "- None captured")
         )
 
+        # ── LLM path ─────────────────────────────────────────────────────────
         if self.client is not None and _ollama_is_reachable(self.vllm_endpoint, probe_timeout=3.0):
             try:
                 system_prompt = (
@@ -318,17 +413,17 @@ class QwenSummarizer:
                 )
 
                 response = self.client.chat.completions.create(
-                    model=self.model_name,
-                    messages=[
+                    model       = self.model_name,
+                    messages    = [
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": context_block},
+                        {"role": "user",   "content": context_block},
                     ],
-                    temperature=0.3,
-                    timeout=SUMMARIZER_TIMEOUT,
+                    temperature = 0.3,      # Slightly higher for natural-sounding prose
+                    timeout     = SUMMARIZER_TIMEOUT,
                 )
 
                 raw_content = response.choices[0].message.content or ""
-                json_match = re.search(r"(\{[\s\S]*\})", raw_content)
+                json_match  = re.search(r"(\{[\s\S]*\})", raw_content)
                 if json_match:
                     clean_content = json_match.group(1)
                 else:
@@ -338,33 +433,41 @@ class QwenSummarizer:
                 print("[Summarizer] Generated follow-up email with Qwen 14B!")
                 return {
                     "subject": parsed_data.subject.strip(),
-                    "body": parsed_data.body.strip(),
-                    "toName": parsed_data.to_name.strip() or customer_name,
+                    "body":    parsed_data.body.strip(),
+                    "toName":  parsed_data.to_name.strip() or customer_name,
                 }
+
             except Exception as e:
                 print(f"[Warning] Follow-up email LLM call failed ({e}). Using template fallback.")
 
-        return self._follow_up_email_fallback(
+        # ── Template fallback ─────────────────────────────────────────────────
+        return QwenSummarizer._follow_up_email_fallback(
             customer_name, customer_company, meeting_title, meeting_date,
             overview, key_points, decisions, next_steps, action_items,
         )
 
     @staticmethod
     def _follow_up_email_fallback(
-        customer_name: str,
+        customer_name:   str,
         customer_company: str,
-        meeting_title: str,
-        meeting_date: str,
-        overview: str,
-        key_points: List[str],
-        decisions: List[str],
-        next_steps: List[str],
-        action_items: List[Dict[str, Any]],
+        meeting_title:   str,
+        meeting_date:    str,
+        overview:        str,
+        key_points:      List[str],
+        decisions:       List[str],
+        next_steps:      List[str],
+        action_items:    List[Dict[str, Any]],
     ) -> Dict[str, str]:
-        """Deterministic template when LLM is unavailable."""
+        """
+        Build a professional follow-up email from a deterministic template.
+
+        Used when Ollama is unavailable or the LLM call fails. Produces a
+        well-structured email without any AI — guaranteed to always succeed.
+        """
         first_name = customer_name.split()[0] if customer_name else "there"
 
-        recap_lines = []
+        # Build the meeting recap section
+        recap_lines: List[str] = []
         if key_points:
             recap_lines.append("Key discussion points:")
             recap_lines.extend(f"  • {p}" for p in key_points[:5])
@@ -372,19 +475,22 @@ class QwenSummarizer:
             recap_lines.append("\nDecisions we aligned on:")
             recap_lines.extend(f"  • {d}" for d in decisions[:4])
 
-        action_section = []
+        # Build the action items section
+        action_section: List[str] = []
         if action_items:
             action_section.append("\nAction items:")
             for item in action_items:
-                owner = str(item.get("owner", "SALESPERSON")).replace("_", " ").title()
+                owner    = str(item.get("owner", "SALESPERSON")).replace("_", " ").title()
                 deadline = item.get("deadline") or "TBD"
                 action_section.append(f"  • {item.get('title', 'Follow up')} — {owner} (by {deadline})")
 
-        next_section = []
+        # Build the next steps section
+        next_section: List[str] = []
         if next_steps:
             next_section.append("\nProposed next steps:")
             next_section.extend(f"  • {s}" for s in next_steps[:5])
 
+        # Assemble the full email body
         body_parts = [
             f"Hi {first_name},",
             "",
@@ -407,7 +513,6 @@ class QwenSummarizer:
 
         return {
             "subject": f"Follow-up: {meeting_title} — {customer_company}",
-            "body": "\n".join(body_parts),
-            "toName": customer_name,
+            "body":    "\n".join(body_parts),
+            "toName":  customer_name,
         }
-

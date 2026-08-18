@@ -1,14 +1,35 @@
+"""
+Meetings Router — SSMI
+======================
+Handles the full lifecycle of a meeting: creation, audio upload, AI processing,
+live meeting finalization, status polling, and follow-up email generation.
+
+AI Pipeline (audio upload path):
+  1. Unload Ollama/Qwen from VRAM  (~4 GB freed)
+  2. Run Whisper STT               (~3 GB peak, then unloaded)
+  3. Run Speaker Diarization        (heuristic fallback; pyannote optional)
+  4. Save Transcript + Timeline to DB  (UI can start rendering immediately)
+  5. Reload Ollama/Qwen and summarize  (action items + structured summary)
+
+All pipeline steps run in a background task so the HTTP response is returned
+immediately with status=processing.
+"""
+
 import os
 import uuid
 import asyncio
+import traceback
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Any
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status, BackgroundTasks
 from fastapi.responses import FileResponse
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
+
 from ..routing import CamelCaseAPIRoute
-from ..database.db import get_db
+from ..database.db import get_db, async_session_maker
 from ..database.models import (
     Meeting,
     MeetingStatus,
@@ -17,6 +38,7 @@ from ..database.models import (
     MeetingEvent,
     ActionItem,
     MeetingSummary,
+    Embedding,
     SpeakerType,
     SentimentType,
     PurchaseIntent,
@@ -25,7 +47,6 @@ from ..database.models import (
 from ..schemas import (
     MeetingCreateSchema,
     MeetingResponseSchema,
-    TimelineEventSchema,
     ActionItemSchema,
     MeetingSummarySchema,
     DashboardStatsSchema,
@@ -38,62 +59,112 @@ from services.diarization.diarizer import SpeakerDiarizer
 from services.intelligence.timeline_engine import TimelineEngine
 from services.summarization.summarizer import QwenSummarizer
 from services.gpu_manager import (
-    unload_ollama_model, reload_ollama_model,
-    flush_cuda, vram_free_mb, _PIPELINE_LOCK,
-    request_pipeline_cancel, clear_pipeline_cancel, is_pipeline_cancelled,
+    unload_ollama_model,
+    reload_ollama_model,
+    flush_cuda,
+    vram_free_mb,
+    _PIPELINE_LOCK,
+    request_pipeline_cancel,
+    clear_pipeline_cancel,
+    is_pipeline_cancelled,
     PipelineCancelled,
 )
 
-router = APIRouter(prefix="/api/meetings", tags=["meetings"], route_class=CamelCaseAPIRoute)
+
+# ---------------------------------------------------------------------------
+# Router setup
+# ---------------------------------------------------------------------------
+
+router = APIRouter(
+    prefix="/api/meetings",
+    tags=["meetings"],
+    route_class=CamelCaseAPIRoute,
+)
+
+# Directory where uploaded audio files are persisted
 AUDIO_STORAGE_DIR = "storage/audio"
 os.makedirs(AUDIO_STORAGE_DIR, exist_ok=True)
 
+
+# ---------------------------------------------------------------------------
+# Constants loaded from environment
+# ---------------------------------------------------------------------------
+
+# Whisper model names — large-v3-turbo for accurate mode, small for fast mode
+WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "large-v3-turbo")
+WHISPER_FAST_MODEL = os.getenv("WHISPER_FAST_MODEL", "small")
+
+# Ollama/vLLM endpoint and model for Qwen summarization
+OLLAMA_ENDPOINT = os.getenv("VLLM_ENDPOINT", "http://localhost:11434/v1").replace("/v1", "")
+OLLAMA_MODEL    = os.getenv("VLLM_MODEL_NAME", "qwen2.5:14b")
+
+
+# ---------------------------------------------------------------------------
+# Audio MIME type helpers
+# ---------------------------------------------------------------------------
+
+# Maps file extensions to their correct MIME types for FileResponse streaming
 _AUDIO_MEDIA_TYPES = {
-    ".mp3": "audio/mpeg",
-    ".wav": "audio/wav",
-    ".m4a": "audio/mp4",
-    ".aac": "audio/aac",
-    ".ogg": "audio/ogg",
+    ".mp3":  "audio/mpeg",
+    ".wav":  "audio/wav",
+    ".m4a":  "audio/mp4",
+    ".aac":  "audio/aac",
+    ".ogg":  "audio/ogg",
     ".flac": "audio/flac",
     ".webm": "audio/webm",
-    ".mp4": "audio/mp4",
-    ".wma": "audio/x-ms-wma",
+    ".mp4":  "audio/mp4",
+    ".wma":  "audio/x-ms-wma",
 }
 
 
 def _audio_media_type(path: str) -> str:
+    """Return the correct MIME type for the given audio file path."""
     ext = os.path.splitext(path)[1].lower()
     return _AUDIO_MEDIA_TYPES.get(ext, "application/octet-stream")
 
-# large-v3-turbo on GPU when VRAM allows; fast mode uses small for speed + lower RAM.
-WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "large-v3-turbo")
-WHISPER_FAST_MODEL = os.getenv("WHISPER_FAST_MODEL", "small")
-OLLAMA_ENDPOINT    = os.getenv("VLLM_ENDPOINT", "http://localhost:11434/v1").replace("/v1", "")
-OLLAMA_MODEL       = os.getenv("VLLM_MODEL_NAME", "qwen2.5:14b")
 
+# ---------------------------------------------------------------------------
+# Whisper model selection
+# ---------------------------------------------------------------------------
 
 def _whisper_model_for_mode(mode: ProcessingMode, free_vram_mb: int = -1) -> str:
+    """
+    Choose the Whisper model variant based on processing mode and available VRAM.
+
+    Falls back to a smaller model automatically when VRAM is insufficient for
+    the requested model.
+    """
     requested = WHISPER_FAST_MODEL if mode == ProcessingMode.FAST else WHISPER_MODEL_NAME
     return pick_model_for_vram(requested, free_vram_mb)
 
-# Summarizer is lightweight (HTTP client only — no VRAM) — safe to keep as singleton
+
+# ---------------------------------------------------------------------------
+# Singleton summarizer (HTTP client only — no VRAM, safe to reuse)
+# ---------------------------------------------------------------------------
+
 _summarizer: "QwenSummarizer | None" = None
 
 
 def _get_summarizer() -> "QwenSummarizer":
+    """Return a shared QwenSummarizer instance, creating it on first call."""
     global _summarizer
     if _summarizer is None:
         _summarizer = QwenSummarizer()
     return _summarizer
 
 
+# ---------------------------------------------------------------------------
+# Pipeline cancellation helpers
+# ---------------------------------------------------------------------------
+
 def _check_pipeline_cancelled(meeting_id: str) -> None:
+    """Raise PipelineCancelled if the user has requested cancellation."""
     if is_pipeline_cancelled(meeting_id):
         raise PipelineCancelled("Processing cancelled by user")
 
 
 async def _mark_meeting_cancelled(meeting_id: str) -> None:
-    from ..database.db import async_session_maker
+    """Update meeting status to FAILED with a 'cancelled by user' message."""
     async with async_session_maker() as db:
         result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
         meeting = result.scalar_one_or_none()
@@ -103,7 +174,12 @@ async def _mark_meeting_cancelled(meeting_id: str) -> None:
             await db.commit()
 
 
+# ---------------------------------------------------------------------------
+# Background task schedulers
+# ---------------------------------------------------------------------------
+
 def _schedule_pipeline(background_tasks: BackgroundTasks, meeting_id: str, file_path: str) -> None:
+    """Queue the full audio AI pipeline (Whisper → Diarization → Summary) as a background task."""
     clear_pipeline_cancel(meeting_id)
     background_tasks.add_task(_run_ai_pipeline, meeting_id, file_path)
 
@@ -115,6 +191,7 @@ def _schedule_intelligence_pipeline(
     duration: float,
     bookmarks: Optional[list] = None,
 ) -> None:
+    """Queue the intelligence-only pipeline (no Whisper) for live browser recordings."""
     clear_pipeline_cancel(meeting_id)
     background_tasks.add_task(
         _run_intelligence_pipeline,
@@ -125,7 +202,12 @@ def _schedule_intelligence_pipeline(
     )
 
 
+# ---------------------------------------------------------------------------
+# Speaker / type coercion helpers
+# ---------------------------------------------------------------------------
+
 def _live_speaker_to_db(speaker: str) -> SpeakerType:
+    """Map loose live-transcript speaker strings to the strict SpeakerType enum."""
     s = str(speaker or "").upper()
     if s in ("SPEAKER_2", "CUSTOMER", "CLIENT"):
         return SpeakerType.CUSTOMER
@@ -134,79 +216,8 @@ def _live_speaker_to_db(speaker: str) -> SpeakerType:
     return SpeakerType.UNKNOWN
 
 
-def _segments_from_live_transcript(
-    lines: list,
-    duration: float,
-) -> list:
-    """Convert live transcript lines into pipeline segment dicts with timestamps."""
-    if not lines:
-        return []
-
-    segments = []
-    for i, line in enumerate(lines):
-        start = float(line.get("start_time", line.get("startTime", 0.0)))
-        if i + 1 < len(lines):
-            next_start = float(
-                lines[i + 1].get("start_time", lines[i + 1].get("startTime", start + 5.0))
-            )
-            end = max(start + 1.0, next_start)
-        else:
-            end = max(start + 2.0, float(duration))
-        segments.append({
-            "speaker": _live_speaker_to_db(line.get("speaker", "UNKNOWN")).value,
-            "start_time": start,
-            "end_time": end,
-            "text": str(line.get("text", "")).strip(),
-            "confidence": 0.95,
-        })
-
-    return [s for s in segments if s["text"]]
-
-
-@router.post("", response_model=MeetingResponseSchema, status_code=status.HTTP_201_CREATED, response_model_by_alias=False)
-async def create_meeting(
-    payload: MeetingCreateSchema,
-    db: AsyncSession = Depends(get_db)
-):
-    """Creates a new meeting session."""
-    meeting_id = f"meeting_{uuid.uuid4().hex[:8]}"
-    if payload.title and payload.title.strip():
-        title = payload.title.strip()
-    elif payload.customerCompany:
-        title = f"Discussion — {payload.customerCompany}"
-    else:
-        title = f"Meeting with {payload.customerName}"
-
-    from datetime import datetime, timezone
-    meeting = Meeting(
-        id=meeting_id,
-        title=title,
-        customer_name=payload.customerName,
-        customer_company=payload.customerCompany or "Company",
-        processing_mode=ProcessingMode(payload.processingMode.value) if payload.processingMode else ProcessingMode.ACCURATE,
-        status=MeetingStatus.RECORDING,
-        date=datetime.now(timezone.utc),
-        duration=0.0,
-        tags=[],
-    )
-
-    db.add(meeting)
-    await db.commit()
-
-    result = await db.execute(
-        select(Meeting)
-        .options(
-            selectinload(Meeting.summary),
-            selectinload(Meeting.transcript_segments),
-            selectinload(Meeting.events),
-            selectinload(Meeting.action_items),
-        )
-        .where(Meeting.id == meeting_id)
-    )
-    return result.scalar_one()
-
-
 def safe_speaker_type(val: Any) -> SpeakerType:
+    """Safely coerce any value to SpeakerType, defaulting to SALESPERSON."""
     if isinstance(val, SpeakerType):
         return val
     s = str(val).upper().strip() if val else ""
@@ -218,6 +229,7 @@ def safe_speaker_type(val: Any) -> SpeakerType:
 
 
 def safe_sentiment_type(val: Any) -> SentimentType:
+    """Safely coerce any value to SentimentType, defaulting to NEUTRAL."""
     if isinstance(val, SentimentType):
         return val
     s = str(val).lower() if val else ""
@@ -231,6 +243,7 @@ def safe_sentiment_type(val: Any) -> SentimentType:
 
 
 def safe_purchase_intent(val: Any) -> Optional[PurchaseIntent]:
+    """Safely coerce any value to PurchaseIntent, defaulting to HIGH."""
     if not val:
         return PurchaseIntent.HIGH
     if isinstance(val, PurchaseIntent):
@@ -248,6 +261,7 @@ def safe_purchase_intent(val: Any) -> Optional[PurchaseIntent]:
 
 
 def safe_event_type(val: Any) -> EventType:
+    """Safely coerce any value to EventType, defaulting to COMMITMENT."""
     if isinstance(val, EventType):
         return val
     s = str(val).upper() if val else ""
@@ -257,22 +271,115 @@ def safe_event_type(val: Any) -> EventType:
     return EventType.COMMITMENT
 
 
+# ---------------------------------------------------------------------------
+# Live transcript conversion
+# ---------------------------------------------------------------------------
+
+def _segments_from_live_transcript(lines: list, duration: float) -> list:
+    """
+    Convert browser Web Speech API transcript lines into pipeline segment dicts.
+
+    Infers end timestamps from the next segment's start time. The final
+    segment's end time is set to the total meeting duration.
+    """
+    if not lines:
+        return []
+
+    segments = []
+    for i, line in enumerate(lines):
+        start = float(line.get("start_time", line.get("startTime", 0.0)))
+
+        # End time: use next segment's start, or duration for the last segment
+        if i + 1 < len(lines):
+            next_start = float(
+                lines[i + 1].get("start_time", lines[i + 1].get("startTime", start + 5.0))
+            )
+            end = max(start + 1.0, next_start)
+        else:
+            end = max(start + 2.0, float(duration))
+
+        segments.append({
+            "speaker":    _live_speaker_to_db(line.get("speaker", "UNKNOWN")).value,
+            "start_time": start,
+            "end_time":   end,
+            "text":       str(line.get("text", "")).strip(),
+            "confidence": 0.95,
+        })
+
+    # Drop segments with empty text
+    return [s for s in segments if s["text"]]
+
+
+# ===========================================================================
+# API Endpoints
+# ===========================================================================
+
+@router.post("", response_model=MeetingResponseSchema, status_code=status.HTTP_201_CREATED, response_model_by_alias=False)
+async def create_meeting(
+    payload: MeetingCreateSchema,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new meeting session in RECORDING state.
+
+    The meeting has no audio yet — audio is uploaded separately via POST /{id}/audio.
+    """
+    meeting_id = f"meeting_{uuid.uuid4().hex[:8]}"
+
+    # Auto-generate a title if none was provided
+    if payload.title and payload.title.strip():
+        title = payload.title.strip()
+    elif payload.customerCompany:
+        title = f"Discussion — {payload.customerCompany}"
+    else:
+        title = f"Meeting with {payload.customerName}"
+
+    meeting = Meeting(
+        id               = meeting_id,
+        title            = title,
+        customer_name    = payload.customerName,
+        customer_company = payload.customerCompany or "Company",
+        processing_mode  = ProcessingMode(payload.processingMode.value) if payload.processingMode else ProcessingMode.ACCURATE,
+        status           = MeetingStatus.RECORDING,
+        date             = datetime.now(timezone.utc),
+        duration         = 0.0,
+        tags             = [],
+    )
+
+    db.add(meeting)
+    await db.commit()
+
+    # Re-fetch with all related data so the response schema has everything it needs
+    result = await db.execute(
+        select(Meeting)
+        .options(
+            selectinload(Meeting.summary),
+            selectinload(Meeting.transcript_segments),
+            selectinload(Meeting.events),
+            selectinload(Meeting.action_items),
+        )
+        .where(Meeting.id == meeting_id)
+    )
+    return result.scalar_one()
+
+
+# ---------------------------------------------------------------------------
+# Full AI pipeline (audio file path)
+# ---------------------------------------------------------------------------
+
 async def _run_ai_pipeline(meeting_id: str, file_path: str):
     """
-    GPU-orchestrated AI pipeline.
+    Acquire the global pipeline lock and run _run_ai_pipeline_locked.
 
-    VRAM schedule (RTX 4050, 6 GB):
-      [0]  Unload Ollama/Qwen  ->  ~4 GB freed
-      [1]  Whisper large-v3-turbo loaded, runs, then UNLOADED  ->  ~3 GB peak
-      [2]  Diarizer heuristic  ->  0 MB VRAM (pyannote 403-gated, instant fallback)
-      [3]  Ollama warm-pinged  ->  Qwen re-loaded (~4 GB) for summarization
+    Retries once if another pipeline is already running. Cancels gracefully
+    if the user requests cancellation via the /cancel endpoint.
     """
     if not _PIPELINE_LOCK.acquire(blocking=False):
         print(f"[Pipeline] Another pipeline is running — {meeting_id} queued for retry.")
         await asyncio.sleep(2)
         if not _PIPELINE_LOCK.acquire(blocking=False):
+            # Could not acquire after retry — mark the meeting as failed
             print(f"[Pipeline] Could not acquire lock for {meeting_id}. Marking failed.")
-            from ..database.db import async_session_maker
             async with async_session_maker() as db:
                 result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
                 meeting = result.scalar_one_or_none()
@@ -292,14 +399,21 @@ async def _run_ai_pipeline(meeting_id: str, file_path: str):
 
 
 async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
+    """
+    Core audio AI pipeline — runs with the global pipeline lock held.
 
+    VRAM schedule (RTX 4050, 6 GB):
+      [1] Unload Ollama/Qwen  → frees ~4 GB
+      [2] Load + run Whisper  → ~3 GB peak, then unloaded
+      [3] Diarizer heuristic  → 0 MB VRAM (pyannote optional)
+      [4] Ollama reloads Qwen → ~4 GB for summarization
+    """
     import time as _time
     t_pipeline_start = _time.time()
 
-    from ..database.db import async_session_maker
     async with async_session_maker() as db:
         try:
-            # ── 0. Fetch meeting ──────────────────────────────────────────────
+            # ── Step 0: Fetch meeting ─────────────────────────────────────────
             result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
             meeting = result.scalar_one_or_none()
             if not meeting:
@@ -311,12 +425,12 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
 
             _check_pipeline_cancelled(meeting_id)
 
-            # ── 1. Unload Ollama so Whisper gets full VRAM ───────────────────
+            # ── Step 1: Unload Ollama so Whisper gets full VRAM ──────────────
             free_before = vram_free_mb()
-            print(f"\n======================================================================", flush=True)
+            print(f"\n{'='*70}", flush=True)
             print(f" [STEP 1/4] STARTING AI PIPELINE FOR {meeting_id}", flush=True)
             print(f" VRAM Free Before Unload: {free_before} MB", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
             await asyncio.to_thread(unload_ollama_model, OLLAMA_ENDPOINT, OLLAMA_MODEL)
             free_after = vram_free_mb()
@@ -326,7 +440,7 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
 
             _check_pipeline_cancelled(meeting_id)
 
-            # ── 2. Speech-to-Text (Whisper loads, runs, then UNLOADS VRAM) ───
+            # ── Step 2: Speech-to-Text (Whisper loads, transcribes, unloads) ─
             print(f"\n[Pipeline][STT] Running Whisper ({whisper_model}) on GPU CUDA float16...", flush=True)
             t0 = _time.time()
             segments_raw = await asyncio.to_thread(
@@ -335,158 +449,166 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
 
             if not segments_raw:
                 raise TranscriptionError("Transcription returned no segments.")
-            stt_duration = _time.time() - t0
-            sample_text = segments_raw[0]["text"] if segments_raw else "N/A"
 
-            print(f"\n======================================================================", flush=True)
+            stt_duration = _time.time() - t0
+            sample_text  = segments_raw[0]["text"] if segments_raw else "N/A"
+
+            print(f"\n{'='*70}", flush=True)
             print(f" [STEP 2/4 COMPLETE] SPEECH-TO-TEXT TRANSCRIPTION (Whisper)", flush=True)
-            print(f"----------------------------------------------------------------------", flush=True)
-            print(f" Model:       Whisper {whisper_model} (GPU CUDA float16)", flush=True)
-            print(f" Time Taken:  {stt_duration:.2f} seconds", flush=True)
-            print(f" Segments:    {len(segments_raw)} transcript segments", flush=True)
-            print(f" Sample:      \"{sample_text[:80]}...\"", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f" Model:      Whisper {whisper_model} (GPU CUDA float16)", flush=True)
+            print(f" Time Taken: {stt_duration:.2f} seconds", flush=True)
+            print(f" Segments:   {len(segments_raw)} transcript segments", flush=True)
+            print(f" Sample:     \"{sample_text[:80]}...\"", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
             _check_pipeline_cancelled(meeting_id)
 
-            # ── 3. Speaker Diarization (HELD / SKIPPED) ──────────────────────
-            print(f"[Pipeline][DIAR] Speaker Diarization feature ON HOLD. Fast-passing segments...", flush=True)
+            # ── Step 3: Speaker Diarization ──────────────────────────────────
+            # pyannote is optional — falls back to an instant heuristic aligner
+            print(f"[Pipeline][DIAR] Running speaker diarization...", flush=True)
             t0 = _time.time()
             diarizer = SpeakerDiarizer()
-            segments = await asyncio.to_thread(diarizer.diarize_and_align, file_path, segments_raw)
+            segments  = await asyncio.to_thread(diarizer.diarize_and_align, file_path, segments_raw)
             diar_duration = _time.time() - t0
 
-            print(f"\n======================================================================", flush=True)
-            print(f" [STEP 3/4 COMPLETE] SPEAKER DIARIZATION (HELD / SKIPPED)", flush=True)
-            print(f"----------------------------------------------------------------------", flush=True)
-            print(f" Status:      Feature Held by Configuration (Fast-Passed)", flush=True)
-            print(f" Time Taken:  {diar_duration:.2f} seconds", flush=True)
-            print(f" Segments:    {len(segments)} segments preserved", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f"\n{'='*70}", flush=True)
+            print(f" [STEP 3/4 COMPLETE] SPEAKER DIARIZATION", flush=True)
+            print(f" Time Taken: {diar_duration:.2f} seconds", flush=True)
+            print(f" Segments:   {len(segments)} segments preserved", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
-            # ── 4. Save Transcript & Timeline to DB Immediately (UI Live View)
-            from sqlalchemy import delete
+            # ── Step 4a: Persist Transcript & Timeline (UI live view) ────────
+            # Clear any stale data from previous pipeline runs
             await db.execute(delete(TranscriptSegment).where(TranscriptSegment.meeting_id == meeting.id))
             await db.execute(delete(MeetingEvent).where(MeetingEvent.meeting_id == meeting.id))
             await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting.id))
             await db.execute(delete(MeetingSummary).where(MeetingSummary.meeting_id == meeting.id))
             await db.commit()
 
+            # Persist all transcript segments
             for seg in segments:
                 db.add(TranscriptSegment(
-                    id=f"seg_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    speaker=safe_speaker_type(seg.get("speaker")),
-                    start_time=float(seg.get("start_time", 0.0)),
-                    end_time=float(seg.get("end_time", 0.0)),
-                    text=str(seg.get("text", "")),
-                    confidence=float(seg.get("confidence", 0.95)),
+                    id         = f"seg_{uuid.uuid4().hex[:12]}",
+                    meeting_id = meeting.id,
+                    speaker    = safe_speaker_type(seg.get("speaker")),
+                    start_time = float(seg.get("start_time", 0.0)),
+                    end_time   = float(seg.get("end_time", 0.0)),
+                    text       = str(seg.get("text", "")),
+                    confidence = float(seg.get("confidence", 0.95)),
                 ))
 
-            # Timeline events
+            # Generate and persist timeline events
             print(f"[Pipeline][TIMELINE] Generating key timeline events...", flush=True)
             t0 = _time.time()
             timeline_events = TimelineEngine.generate_timeline(segments)
             for evt in timeline_events:
                 db.add(MeetingEvent(
-                    id=f"evt_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    type=safe_event_type(evt.get("type")),
-                    title=str(evt.get("title", "Key Discussion Point")),
-                    description=str(evt.get("description", "")),
-                    start_time=float(evt.get("start_time", 0.0)),
-                    end_time=float(evt.get("end_time", 0.0)),
-                    speaker=safe_speaker_type(evt.get("speaker")),
-                    importance=int(evt.get("importance", 3)),
-                    confidence=float(evt.get("confidence", 0.95)),
-                    evidence=evt.get("evidence", []),
-                    purchase_intent=safe_purchase_intent(evt.get("purchase_intent")),
+                    id             = f"evt_{uuid.uuid4().hex[:12]}",
+                    meeting_id     = meeting.id,
+                    type           = safe_event_type(evt.get("type")),
+                    title          = str(evt.get("title", "Key Discussion Point")),
+                    description    = str(evt.get("description", "")),
+                    start_time     = float(evt.get("start_time", 0.0)),
+                    end_time       = float(evt.get("end_time", 0.0)),
+                    speaker        = safe_speaker_type(evt.get("speaker")),
+                    importance     = int(evt.get("importance", 3)),
+                    confidence     = float(evt.get("confidence", 0.95)),
+                    evidence       = evt.get("evidence", []),
+                    purchase_intent = safe_purchase_intent(evt.get("purchase_intent")),
                 ))
 
-            # COMMIT STAGE 1: Transcript & Timeline available in DB for UI live display!
+            # Commit Stage 1 — transcript + timeline are now live in the DB for UI display
             await db.commit()
-            print(f"[Pipeline] Transcript ({len(segments)} segments) & Timeline ({len(timeline_events)} events) committed to DB. UI live view active!\n", flush=True)
+            print(
+                f"[Pipeline] Transcript ({len(segments)} segs) & "
+                f"Timeline ({len(timeline_events)} events) committed. UI live view active!\n",
+                flush=True,
+            )
 
             _check_pipeline_cancelled(meeting_id)
 
-            # ── 5. Warm-ping Ollama then summarize ───────────────────────────
+            # ── Step 4b: LLM Summarization ───────────────────────────────────
             print(f"[Pipeline][LLM] Pre-warming Ollama Qwen2.5-14B into VRAM...", flush=True)
             await asyncio.to_thread(reload_ollama_model, OLLAMA_ENDPOINT, OLLAMA_MODEL)
 
             print(f"[Pipeline][LLM] Generating AI summary & action items with Qwen2.5-14B...", flush=True)
-            t0 = _time.time()
-            summarizer = _get_summarizer()
+            t0           = _time.time()
+            summarizer   = _get_summarizer()
             summary_data = await asyncio.to_thread(
                 summarizer.generate_summary_and_actions,
                 meeting.customer_name, meeting.customer_company, segments, timeline_events,
             )
             llm_duration = _time.time() - t0
 
+            # Persist the structured summary
             sum_dict = summary_data.get("summary", {})
             db.add(MeetingSummary(
-                id=f"sum_{uuid.uuid4().hex[:12]}",
-                meeting_id=meeting.id,
-                objective=str(sum_dict.get("objective", f"Sales discussion with {meeting.customer_name}")),
-                overview=str(sum_dict.get("overview", "Productive customer discussion.")),
-                key_points=sum_dict.get("key_points", []),
-                decisions=sum_dict.get("decisions", []),
-                risks=sum_dict.get("risks", []),
-                customer_sentiment=safe_sentiment_type(sum_dict.get("customer_sentiment")),
-                purchase_intent=safe_purchase_intent(sum_dict.get("purchase_intent")),
-                next_steps=sum_dict.get("next_steps", []),
+                id                 = f"sum_{uuid.uuid4().hex[:12]}",
+                meeting_id         = meeting.id,
+                objective          = str(sum_dict.get("objective", f"Sales discussion with {meeting.customer_name}")),
+                overview           = str(sum_dict.get("overview", "Productive customer discussion.")),
+                key_points         = sum_dict.get("key_points", []),
+                decisions          = sum_dict.get("decisions", []),
+                risks              = sum_dict.get("risks", []),
+                customer_sentiment = safe_sentiment_type(sum_dict.get("customer_sentiment")),
+                purchase_intent    = safe_purchase_intent(sum_dict.get("purchase_intent")),
+                next_steps         = sum_dict.get("next_steps", []),
             ))
 
+            # Persist action items
             actions_list = summary_data.get("action_items", [])
             for act in actions_list:
                 db.add(ActionItem(
-                    id=f"act_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    title=str(act.get("title", "Action Item")),
-                    description=str(act.get("description", "")),
-                    owner=safe_speaker_type(act.get("owner")),
-                    deadline=act.get("deadline"),
-                    confidence=float(act.get("confidence", 0.95)),
-                    evidence_timestamp=act.get("evidence_timestamp"),
-                    priority=str(act.get("priority", "medium")),
-                    completed=False,
+                    id                 = f"act_{uuid.uuid4().hex[:12]}",
+                    meeting_id         = meeting.id,
+                    title              = str(act.get("title", "Action Item")),
+                    description        = str(act.get("description", "")),
+                    owner              = safe_speaker_type(act.get("owner")),
+                    deadline           = act.get("deadline"),
+                    confidence         = float(act.get("confidence", 0.95)),
+                    evidence_timestamp = act.get("evidence_timestamp"),
+                    priority           = str(act.get("priority", "medium")),
+                    completed          = False,
                 ))
 
-            # ── 6. Mark complete ─────────────────────────────────────────────
-            meeting.status = MeetingStatus.COMPLETED
-            meeting.sentiment = safe_sentiment_type(sum_dict.get("customer_sentiment"))
+            # ── Step 5: Mark meeting as COMPLETED ────────────────────────────
+            meeting.status         = MeetingStatus.COMPLETED
+            meeting.sentiment      = safe_sentiment_type(sum_dict.get("customer_sentiment"))
             meeting.purchase_intent = safe_purchase_intent(sum_dict.get("purchase_intent"))
-            meeting.duration = max(
+            meeting.duration       = max(
                 [float(s.get("end_time", 0.0)) for s in segments], default=300.0
             )
             await db.commit()
 
+            # Print final summary to server logs
             total_duration = _time.time() - t_pipeline_start
-            key_pts = sum_dict.get("key_points", [])
+            key_pts        = sum_dict.get("key_points", [])
+            raw_sent       = sum_dict.get("customer_sentiment", "NEUTRAL")
+            raw_intent     = sum_dict.get("purchase_intent", "MEDIUM")
+            sent_str       = raw_sent.value if hasattr(raw_sent, "value") else str(raw_sent)
+            intent_str     = raw_intent.value if hasattr(raw_intent, "value") else str(raw_intent)
 
-            print(f"\n======================================================================", flush=True)
+            print(f"\n{'='*70}", flush=True)
             print(f" [STEP 4/4 COMPLETE] QWEN 14B AI INTELLIGENCE EXTRACTION", flush=True)
-            print(f"----------------------------------------------------------------------", flush=True)
             print(f" Time Taken:  {llm_duration:.2f} seconds", flush=True)
-            raw_sent = sum_dict.get('customer_sentiment', 'NEUTRAL')
-            raw_intent = sum_dict.get('purchase_intent', 'MEDIUM')
-            sent_str = raw_sent.value if hasattr(raw_sent, 'value') else str(raw_sent)
-            intent_str = raw_intent.value if hasattr(raw_intent, 'value') else str(raw_intent)
             print(f" Objective:   {sum_dict.get('objective', 'N/A')}", flush=True)
             print(f" Sentiment:   {sent_str}", flush=True)
             print(f" Intent:      {intent_str}", flush=True)
             print(f" Key Points:  {len(key_pts)} points extracted", flush=True)
             print(f" Actions:     {len(actions_list)} action items assigned", flush=True)
             for idx_a, act_item in enumerate(actions_list, 1):
-                owner = act_item.get('owner', 'SALESPERSON')
-                owner_str = owner.value if hasattr(owner, 'value') else str(owner)
+                owner     = act_item.get("owner", "SALESPERSON")
+                owner_str = owner.value if hasattr(owner, "value") else str(owner)
                 print(f"   {idx_a}. [{owner_str}] {act_item.get('title', '')}", flush=True)
-            print(f"======================================================================", flush=True)
-            print(f" ALL PIPELINE STAGES COMPLETED SUCCESSFULLY IN {total_duration:.1f} SECONDS", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f"{'='*70}", flush=True)
+            print(f" ALL PIPELINE STAGES COMPLETED IN {total_duration:.1f} SECONDS", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
         except PipelineCancelled:
-            raise
+            raise  # Let the outer wrapper handle cancellation cleanup
+
         except TranscriptionError as e:
+            # Whisper-specific failure — common cause: no speech in audio
             print(f"[Pipeline] TRANSCRIPTION FAILED for {meeting_id}: {e}")
             try:
                 result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
@@ -497,9 +619,10 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
                     await db.commit()
             except Exception:
                 pass
+
         except Exception as e:
+            # Unexpected pipeline failure
             print(f"[Pipeline] FAILED for {meeting_id}: {e}")
-            import traceback
             traceback.print_exc()
             try:
                 result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
@@ -512,19 +635,27 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
                 pass
 
 
+# ---------------------------------------------------------------------------
+# Intelligence-only pipeline (live browser recordings — no Whisper)
+# ---------------------------------------------------------------------------
+
 async def _run_intelligence_pipeline(
     meeting_id: str,
     segments: list,
     duration: float,
     bookmarks: list,
 ):
-    """Run timeline + LLM intelligence on pre-built transcript segments (no Whisper)."""
+    """
+    Acquire the global pipeline lock and run the intelligence pipeline.
+
+    Used for live meetings recorded in the browser — skips Whisper entirely
+    and runs timeline + Qwen summarization on the Web Speech API transcript.
+    """
     if not _PIPELINE_LOCK.acquire(blocking=False):
         print(f"[Pipeline] Another pipeline is running — {meeting_id} intelligence queued for retry.")
         await asyncio.sleep(2)
         if not _PIPELINE_LOCK.acquire(blocking=False):
             print(f"[Pipeline] Could not acquire lock for {meeting_id}. Marking failed.")
-            from ..database.db import async_session_maker
             async with async_session_maker() as db:
                 result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
                 meeting = result.scalar_one_or_none()
@@ -550,21 +681,29 @@ async def _run_intelligence_pipeline_locked(
     duration: float,
     bookmarks: list,
 ):
-    """Timeline + Qwen summarization from live transcript — skips Whisper entirely."""
+    """
+    Timeline + Qwen summarization from live transcript — skips Whisper entirely.
+
+    Steps:
+      1. Validate segments exist
+      2. Clear any stale DB data for this meeting
+      3. Persist transcript segments + timeline events
+      4. Run Qwen summarization and persist summary + action items
+      5. Mark meeting as COMPLETED
+    """
     import time as _time
     t_pipeline_start = _time.time()
 
-    from ..database.db import async_session_maker
-    from sqlalchemy import delete
-
     async with async_session_maker() as db:
         try:
+            # Fetch meeting record
             result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
             meeting = result.scalar_one_or_none()
             if not meeting:
                 print(f"[Pipeline] Meeting {meeting_id} not found — aborting.")
                 return
 
+            # Bail early if there's nothing to process
             if not segments:
                 meeting.status = MeetingStatus.FAILED
                 meeting.processing_error = "No live transcript to analyze"
@@ -577,118 +716,124 @@ async def _run_intelligence_pipeline_locked(
 
             _check_pipeline_cancelled(meeting_id)
 
-            print(f"\n======================================================================", flush=True)
+            print(f"\n{'='*70}", flush=True)
             print(f" [LIVE INTELLIGENCE] STARTING FOR {meeting_id} (Whisper skipped)", flush=True)
             print(f" Segments: {len(segments)} | Duration: {duration:.0f}s", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
-            # Clear prior results
+            # Clear any previous results for this meeting
             await db.execute(delete(TranscriptSegment).where(TranscriptSegment.meeting_id == meeting.id))
             await db.execute(delete(MeetingEvent).where(MeetingEvent.meeting_id == meeting.id))
             await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting.id))
             await db.execute(delete(MeetingSummary).where(MeetingSummary.meeting_id == meeting.id))
             await db.commit()
 
+            # Persist live transcript segments
             for seg in segments:
                 db.add(TranscriptSegment(
-                    id=f"seg_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    speaker=safe_speaker_type(seg.get("speaker")),
-                    start_time=float(seg.get("start_time", 0.0)),
-                    end_time=float(seg.get("end_time", 0.0)),
-                    text=str(seg.get("text", "")),
-                    confidence=float(seg.get("confidence", 0.95)),
+                    id         = f"seg_{uuid.uuid4().hex[:12]}",
+                    meeting_id = meeting.id,
+                    speaker    = safe_speaker_type(seg.get("speaker")),
+                    start_time = float(seg.get("start_time", 0.0)),
+                    end_time   = float(seg.get("end_time", 0.0)),
+                    text       = str(seg.get("text", "")),
+                    confidence = float(seg.get("confidence", 0.95)),
                 ))
 
+            # Generate timeline events — pass bookmarks so voice-marked moments are included
             print(f"[Pipeline][TIMELINE] Generating key timeline events from live transcript...", flush=True)
             t0 = _time.time()
             timeline_events = TimelineEngine.generate_timeline(segments, bookmarks=bookmarks)
             for evt in timeline_events:
                 db.add(MeetingEvent(
-                    id=f"evt_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    type=safe_event_type(evt.get("type")),
-                    title=str(evt.get("title", "Key Discussion Point")),
-                    description=str(evt.get("description", "")),
-                    start_time=float(evt.get("start_time", 0.0)),
-                    end_time=float(evt.get("end_time", 0.0)),
-                    speaker=safe_speaker_type(evt.get("speaker")),
-                    importance=int(evt.get("importance", 3)),
-                    confidence=float(evt.get("confidence", 0.95)),
-                    evidence=evt.get("evidence", []),
-                    purchase_intent=safe_purchase_intent(evt.get("purchase_intent")),
+                    id             = f"evt_{uuid.uuid4().hex[:12]}",
+                    meeting_id     = meeting.id,
+                    type           = safe_event_type(evt.get("type")),
+                    title          = str(evt.get("title", "Key Discussion Point")),
+                    description    = str(evt.get("description", "")),
+                    start_time     = float(evt.get("start_time", 0.0)),
+                    end_time       = float(evt.get("end_time", 0.0)),
+                    speaker        = safe_speaker_type(evt.get("speaker")),
+                    importance     = int(evt.get("importance", 3)),
+                    confidence     = float(evt.get("confidence", 0.95)),
+                    evidence       = evt.get("evidence", []),
+                    purchase_intent = safe_purchase_intent(evt.get("purchase_intent")),
                 ))
 
             await db.commit()
             print(
-                f"[Pipeline] Live transcript ({len(segments)} segments) & "
+                f"[Pipeline] Live transcript ({len(segments)} segs) & "
                 f"Timeline ({len(timeline_events)} events) committed.\n",
                 flush=True,
             )
 
             _check_pipeline_cancelled(meeting_id)
 
+            # LLM summarization
             print(f"[Pipeline][LLM] Pre-warming Ollama Qwen2.5-14B into VRAM...", flush=True)
             await asyncio.to_thread(reload_ollama_model, OLLAMA_ENDPOINT, OLLAMA_MODEL)
 
             print(f"[Pipeline][LLM] Generating AI summary & action items with Qwen2.5-14B...", flush=True)
-            t0 = _time.time()
-            summarizer = _get_summarizer()
+            t0           = _time.time()
+            summarizer   = _get_summarizer()
             summary_data = await asyncio.to_thread(
                 summarizer.generate_summary_and_actions,
                 meeting.customer_name, meeting.customer_company, segments, timeline_events,
             )
             llm_duration = _time.time() - t0
 
+            # Persist summary
             sum_dict = summary_data.get("summary", {})
             db.add(MeetingSummary(
-                id=f"sum_{uuid.uuid4().hex[:12]}",
-                meeting_id=meeting.id,
-                objective=str(sum_dict.get("objective", f"Sales discussion with {meeting.customer_name}")),
-                overview=str(sum_dict.get("overview", "Productive customer discussion.")),
-                key_points=sum_dict.get("key_points", []),
-                decisions=sum_dict.get("decisions", []),
-                risks=sum_dict.get("risks", []),
-                customer_sentiment=safe_sentiment_type(sum_dict.get("customer_sentiment")),
-                purchase_intent=safe_purchase_intent(sum_dict.get("purchase_intent")),
-                next_steps=sum_dict.get("next_steps", []),
+                id                 = f"sum_{uuid.uuid4().hex[:12]}",
+                meeting_id         = meeting.id,
+                objective          = str(sum_dict.get("objective", f"Sales discussion with {meeting.customer_name}")),
+                overview           = str(sum_dict.get("overview", "Productive customer discussion.")),
+                key_points         = sum_dict.get("key_points", []),
+                decisions          = sum_dict.get("decisions", []),
+                risks              = sum_dict.get("risks", []),
+                customer_sentiment = safe_sentiment_type(sum_dict.get("customer_sentiment")),
+                purchase_intent    = safe_purchase_intent(sum_dict.get("purchase_intent")),
+                next_steps         = sum_dict.get("next_steps", []),
             ))
 
+            # Persist action items
             actions_list = summary_data.get("action_items", [])
             for act in actions_list:
                 db.add(ActionItem(
-                    id=f"act_{uuid.uuid4().hex[:12]}",
-                    meeting_id=meeting.id,
-                    title=str(act.get("title", "Action Item")),
-                    description=str(act.get("description", "")),
-                    owner=safe_speaker_type(act.get("owner")),
-                    deadline=act.get("deadline"),
-                    confidence=float(act.get("confidence", 0.95)),
-                    evidence_timestamp=act.get("evidence_timestamp"),
-                    priority=str(act.get("priority", "medium")),
-                    completed=False,
+                    id                 = f"act_{uuid.uuid4().hex[:12]}",
+                    meeting_id         = meeting.id,
+                    title              = str(act.get("title", "Action Item")),
+                    description        = str(act.get("description", "")),
+                    owner              = safe_speaker_type(act.get("owner")),
+                    deadline           = act.get("deadline"),
+                    confidence         = float(act.get("confidence", 0.95)),
+                    evidence_timestamp = act.get("evidence_timestamp"),
+                    priority           = str(act.get("priority", "medium")),
+                    completed          = False,
                 ))
 
-            meeting.status = MeetingStatus.COMPLETED
-            meeting.sentiment = safe_sentiment_type(sum_dict.get("customer_sentiment"))
+            # Mark meeting as completed
+            meeting.status          = MeetingStatus.COMPLETED
+            meeting.sentiment       = safe_sentiment_type(sum_dict.get("customer_sentiment"))
             meeting.purchase_intent = safe_purchase_intent(sum_dict.get("purchase_intent"))
-            meeting.duration = max(
+            meeting.duration        = max(
                 float(duration),
                 max([float(s.get("end_time", 0.0)) for s in segments], default=0.0),
             )
             await db.commit()
 
             total_duration = _time.time() - t_pipeline_start
-            print(f"\n======================================================================", flush=True)
+            print(f"\n{'='*70}", flush=True)
             print(f" [LIVE INTELLIGENCE COMPLETE] {meeting_id} in {total_duration:.1f}s", flush=True)
             print(f" LLM time: {llm_duration:.2f}s | Actions: {len(actions_list)}", flush=True)
-            print(f"======================================================================\n", flush=True)
+            print(f"{'='*70}\n", flush=True)
 
         except PipelineCancelled:
-            raise
+            raise  # Let the outer wrapper handle it
+
         except Exception as e:
             print(f"[Pipeline] LIVE INTELLIGENCE FAILED for {meeting_id}: {e}")
-            import traceback
             traceback.print_exc()
             try:
                 result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
@@ -701,6 +846,10 @@ async def _run_intelligence_pipeline_locked(
                 pass
 
 
+# ===========================================================================
+# REST Endpoints
+# ===========================================================================
+
 @router.post("/{meeting_id}/finalize-live", response_model=MeetingResponseSchema, response_model_by_alias=False)
 async def finalize_live_meeting(
     meeting_id: str,
@@ -709,8 +858,10 @@ async def finalize_live_meeting(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Finalize a live meeting using the browser-captured transcript.
-    Skips Whisper STT and runs timeline + AI intelligence directly.
+    Finalize a live meeting using the browser-captured Web Speech API transcript.
+
+    Skips Whisper STT entirely and runs timeline + Qwen intelligence directly
+    on the provided transcript segments. Returns immediately with status=processing.
     """
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
@@ -720,7 +871,8 @@ async def finalize_live_meeting(
     if meeting.status == MeetingStatus.PROCESSING:
         raise HTTPException(status_code=409, detail="Meeting is already being processed")
 
-    lines = [{"speaker": l.speaker, "text": l.text, "start_time": l.startTime} for l in payload.transcript]
+    # Convert LiveTranscriptLineSchema objects to plain dicts for the pipeline
+    lines    = [{"speaker": l.speaker, "text": l.text, "start_time": l.startTime} for l in payload.transcript]
     segments = _segments_from_live_transcript(lines, payload.duration)
 
     if not segments:
@@ -758,7 +910,12 @@ async def stream_meeting_audio(
     meeting_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Stream the saved meeting recording (supports browser seeking via Range requests)."""
+    """
+    Stream the saved audio recording for a meeting.
+
+    Uses FileResponse which supports HTTP Range requests so the browser
+    audio player can seek without re-downloading the entire file.
+    """
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
     if not meeting:
@@ -781,9 +938,14 @@ async def upload_meeting_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     auto_process: bool = Form(default=True),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
-    """Uploads audio file — saves it and optionally starts AI pipeline in background."""
+    """
+    Upload an audio file and optionally start the AI pipeline immediately.
+
+    If the meeting doesn't exist yet, a new one is created automatically.
+    Supported formats: mp3, wav, m4a, aac, ogg, flac, webm, mp4, wma.
+    """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -798,32 +960,33 @@ async def upload_meeting_audio(
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
 
+    # Auto-create the meeting record if it doesn't exist
     if not meeting:
-        from datetime import datetime, timezone
         meeting = Meeting(
-            id=meeting_id,
-            title=f"Uploaded Recording ({file.filename})",
-            customer_name="Customer",
-            customer_company="Client Company",
-            processing_mode=ProcessingMode.ACCURATE,
-            status=MeetingStatus.PROCESSING,
-            date=datetime.now(timezone.utc),
-            duration=0.0,
-            tags=[],
+            id               = meeting_id,
+            title            = f"Uploaded Recording ({file.filename})",
+            customer_name    = "Customer",
+            customer_company = "Client Company",
+            processing_mode  = ProcessingMode.ACCURATE,
+            status           = MeetingStatus.PROCESSING,
+            date             = datetime.now(timezone.utc),
+            duration         = 0.0,
+            tags             = [],
         )
         db.add(meeting)
 
     # Save audio file to disk
     file_path = os.path.join(AUDIO_STORAGE_DIR, f"{meeting_id}_{file.filename}")
-    content = await file.read()
+    content   = await file.read()
     with open(file_path, "wb") as buffer:
         buffer.write(content)
 
-    meeting.audio_path = file_path
-    meeting.status = MeetingStatus.PROCESSING if auto_process else MeetingStatus.RECORDING
+    meeting.audio_path       = file_path
+    meeting.status           = MeetingStatus.PROCESSING if auto_process else MeetingStatus.RECORDING
     meeting.processing_error = None
     await db.commit()
 
+    # Re-fetch with related data for the response
     result = await db.execute(
         select(Meeting)
         .options(
@@ -851,7 +1014,7 @@ async def process_meeting(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """Start AI processing on uploaded audio."""
+    """Start AI processing on an already-uploaded audio file."""
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
     if not meeting:
@@ -892,7 +1055,7 @@ async def cancel_meeting_processing(
     meeting_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Request cancellation of an in-progress AI pipeline."""
+    """Request cancellation of an in-progress AI pipeline run."""
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
     if not meeting:
@@ -901,6 +1064,7 @@ async def cancel_meeting_processing(
     if meeting.status != MeetingStatus.PROCESSING:
         raise HTTPException(status_code=400, detail="Meeting is not currently processing")
 
+    # Signal the background task to stop at the next checkpoint
     request_pipeline_cancel(meeting_id)
     meeting.status = MeetingStatus.FAILED
     meeting.processing_error = "Processing cancelled by user"
@@ -924,21 +1088,23 @@ async def delete_meeting(
     meeting_id: str,
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete a meeting and its associated data."""
-    from sqlalchemy import delete
-    from ..database.models import Embedding
+    """
+    Delete a meeting and all its associated data (transcript, events, summary, embeddings).
 
+    Also removes the saved audio file from disk if it exists.
+    """
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
 
+    # Signal cancellation if the pipeline is still running
     if meeting.status == MeetingStatus.PROCESSING:
         request_pipeline_cancel(meeting_id)
 
     audio_path = meeting.audio_path
 
-    # Delete children explicitly (transcript segments reference events via FK)
+    # Delete all child rows first (FK constraints prevent deleting the meeting row directly)
     await db.execute(delete(TranscriptSegment).where(TranscriptSegment.meeting_id == meeting_id))
     await db.execute(delete(MeetingEvent).where(MeetingEvent.meeting_id == meeting_id))
     await db.execute(delete(ActionItem).where(ActionItem.meeting_id == meeting_id))
@@ -947,6 +1113,7 @@ async def delete_meeting(
     await db.execute(delete(Meeting).where(Meeting.id == meeting_id))
     await db.commit()
 
+    # Remove the audio file from disk (best-effort)
     if audio_path and os.path.exists(audio_path):
         try:
             os.remove(audio_path)
@@ -963,7 +1130,7 @@ async def reprocess_meeting(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
-    """Re-run the AI pipeline on an existing meeting's saved audio file."""
+    """Re-run the full AI pipeline on an existing meeting's saved audio file."""
     result = await db.execute(select(Meeting).where(Meeting.id == meeting_id))
     meeting = result.scalar_one_or_none()
     if not meeting:
@@ -998,7 +1165,11 @@ async def reprocess_meeting(
 
 @router.get("", response_model=List[MeetingResponseSchema], response_model_by_alias=False)
 async def list_meetings(db: AsyncSession = Depends(get_db)):
-    """Lists all meetings including those currently being recorded or processing."""
+    """
+    Return all meetings ordered by date (newest first).
+
+    Includes meetings in every status — recording, processing, completed, and failed.
+    """
     result = await db.execute(
         select(Meeting)
         .options(
@@ -1009,69 +1180,92 @@ async def list_meetings(db: AsyncSession = Depends(get_db)):
         )
         .order_by(Meeting.date.desc())
     )
-    meetings = result.scalars().all()
-    return meetings
+    return result.scalars().all()
 
 
 @router.get("/dashboard/stats", response_model=DashboardStatsSchema, response_model_by_alias=False)
 async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
-    """Computes real aggregated dashboard statistics from database."""
+    """
+    Compute and return aggregated dashboard statistics from the database.
+
+    Metrics returned:
+      - totalMeetings / totalActionItems / avgMeetingMinutes
+      - hoursSaved (estimated time saved by AI summarization)
+      - meetingsThisWeek
+      - conversionRate (% meetings with HIGH/VERY_HIGH purchase intent)
+    """
+    # Total meeting count
     total_meetings_res = await db.execute(select(func.count(Meeting.id)))
-    total_meetings = total_meetings_res.scalar() or 0
+    total_meetings     = total_meetings_res.scalar() or 0
 
+    # Total action items count
     total_actions_res = await db.execute(select(func.count(ActionItem.id)))
-    total_actions = total_actions_res.scalar() or 0
+    total_actions     = total_actions_res.scalar() or 0
 
+    # Average meeting duration (in minutes)
     avg_duration_res = await db.execute(select(func.avg(Meeting.duration)))
-    avg_seconds = avg_duration_res.scalar() or 0.0
-    avg_minutes = int(avg_seconds / 60) if avg_seconds else 0
+    avg_seconds      = avg_duration_res.scalar() or 0.0
+    avg_minutes      = int(avg_seconds / 60) if avg_seconds else 0
 
+    # Estimated hours saved: 75% of total meeting time (AI replaces manual note-taking)
     hours_saved = int((total_meetings * max(avg_minutes, 15) * 0.75) / 60) if total_meetings > 0 else 0
 
-    from datetime import datetime, timedelta, timezone
+    # Meetings created in the last 7 days
     one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
-    recent_res = await db.execute(select(func.count(Meeting.id)).where(Meeting.date >= one_week_ago))
+    recent_res   = await db.execute(
+        select(func.count(Meeting.id)).where(Meeting.date >= one_week_ago)
+    )
     meetings_this_week = recent_res.scalar() or 0
 
+    # Conversion rate: meetings with HIGH or VERY_HIGH purchase intent
     high_intent_res = await db.execute(
         select(func.count(Meeting.id)).where(
             Meeting.purchase_intent.in_([PurchaseIntent.HIGH, PurchaseIntent.VERY_HIGH])
         )
     )
     high_intent_count = high_intent_res.scalar() or 0
-    conversion_rate = int((high_intent_count / total_meetings) * 100) if total_meetings > 0 else 0
+    conversion_rate   = int((high_intent_count / total_meetings) * 100) if total_meetings > 0 else 0
 
     return DashboardStatsSchema(
-        totalMeetings=total_meetings,
-        totalActionItems=total_actions,
-        avgMeetingMinutes=avg_minutes,
-        hoursSaved=hours_saved,
-        meetingsThisWeek=meetings_this_week,
-        conversionRate=conversion_rate,
+        totalMeetings     = total_meetings,
+        totalActionItems  = total_actions,
+        avgMeetingMinutes = avg_minutes,
+        hoursSaved        = hours_saved,
+        meetingsThisWeek  = meetings_this_week,
+        conversionRate    = conversion_rate,
     )
 
 
 @router.get("/{meeting_id}/status")
 async def get_meeting_status(meeting_id: str, db: AsyncSession = Depends(get_db)):
-    """Lightweight endpoint to poll AI processing status of a meeting."""
-    result = await db.execute(select(Meeting.status, Meeting.duration).where(Meeting.id == meeting_id))
+    """
+    Lightweight status polling endpoint for the AI pipeline.
+
+    Returns status, duration, and any processing error — much cheaper than
+    fetching the full meeting with all related data.
+    """
+    result = await db.execute(
+        select(Meeting.status, Meeting.duration).where(Meeting.id == meeting_id)
+    )
     row = result.first()
     if not row:
         raise HTTPException(status_code=404, detail="Meeting not found")
+
     err_result = await db.execute(
         select(Meeting.processing_error).where(Meeting.id == meeting_id)
     )
     err_row = err_result.first()
+
     return {
-        "status": row[0],
-        "duration": row[1],
+        "status":          row[0],
+        "duration":        row[1],
         "processingError": err_row[0] if err_row else None,
     }
 
 
 @router.get("/{meeting_id}", response_model=MeetingResponseSchema, response_model_by_alias=False)
 async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db)):
-    """Fetches details for a specific meeting."""
+    """Fetch the full detail of a single meeting including transcript, timeline, and summary."""
     result = await db.execute(
         select(Meeting)
         .options(
@@ -1090,7 +1284,12 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{meeting_id}/follow-up-email", response_model=FollowUpEmailSchema, response_model_by_alias=False)
 async def generate_follow_up_email(meeting_id: str, db: AsyncSession = Depends(get_db)):
-    """Generate a post-meeting follow-up email draft from summary and action items."""
+    """
+    Generate a professional follow-up email draft from the meeting's summary and action items.
+
+    Requires the meeting to be in COMPLETED status with a summary available.
+    Uses Qwen 14B if Ollama is reachable, otherwise uses the deterministic template fallback.
+    """
     result = await db.execute(
         select(Meeting)
         .options(
@@ -1110,19 +1309,21 @@ async def generate_follow_up_email(meeting_id: str, db: AsyncSession = Depends(g
         raise HTTPException(status_code=400, detail="No meeting summary available — run AI processing first")
 
     summary = meeting.summary
+
+    # Serialize action items to plain dicts for the summarizer
     action_items = [
         {
-            "title": item.title,
+            "title":       item.title,
             "description": item.description,
-            "owner": item.owner.value if hasattr(item.owner, "value") else str(item.owner),
-            "deadline": item.deadline,
-            "priority": item.priority,
+            "owner":       item.owner.value if hasattr(item.owner, "value") else str(item.owner),
+            "deadline":    item.deadline,
+            "priority":    item.priority,
         }
         for item in (meeting.action_items or [])
     ]
 
     meeting_date = meeting.date.strftime("%B %d, %Y") if meeting.date else "recently"
-    summarizer = _get_summarizer()
+    summarizer   = _get_summarizer()
 
     email_data = await asyncio.to_thread(
         summarizer.generate_follow_up_email,
@@ -1131,16 +1332,16 @@ async def generate_follow_up_email(meeting_id: str, db: AsyncSession = Depends(g
         meeting.title,
         meeting_date,
         {
-            "overview": summary.overview,
-            "key_points": summary.key_points or [],
-            "decisions": summary.decisions or [],
-            "next_steps": summary.next_steps or [],
+            "overview":    summary.overview,
+            "key_points":  summary.key_points or [],
+            "decisions":   summary.decisions or [],
+            "next_steps":  summary.next_steps or [],
         },
         action_items,
     )
 
     return FollowUpEmailSchema(
-        subject=email_data["subject"],
-        body=email_data["body"],
-        toName=email_data.get("toName") or meeting.customer_name,
+        subject = email_data["subject"],
+        body    = email_data["body"],
+        toName  = email_data.get("toName") or meeting.customer_name,
     )
