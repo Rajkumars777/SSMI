@@ -23,6 +23,12 @@ build/
 # Storage / uploads
 storage/
 
+# Database files
+*.db
+*.db.bak
+*.sqlite
+*.sqlite3
+
 # Environment
 .env
 .env.local
@@ -34,5 +40,6 @@ Thumbs.db
 
 # IDE
 .vscode/
+.idea/
 *.swp
 *.swo
