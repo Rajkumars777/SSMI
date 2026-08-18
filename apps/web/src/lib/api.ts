@@ -1,4 +1,4 @@
-import { Meeting, SearchResult, EventType } from './types';
+import { Meeting, SearchResult, EventType, FollowUpEmail } from './types';
 
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000';
@@ -101,6 +101,12 @@ class SSMIApiClient {
 
   async reprocessMeeting(id: string): Promise<Meeting> {
     return requestJson<Meeting>(`${this.baseUrl}/api/meetings/${id}/reprocess`, {
+      method: 'POST',
+    });
+  }
+
+  async generateFollowUpEmail(id: string): Promise<FollowUpEmail> {
+    return requestJson<FollowUpEmail>(`${this.baseUrl}/api/meetings/${id}/follow-up-email`, {
       method: 'POST',
     });
   }

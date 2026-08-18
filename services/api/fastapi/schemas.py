@@ -152,3 +152,13 @@ class FinalizeLiveMeetingSchema(BaseModel):
     duration: float = 0.0
     bookmarks: List[float] = []
 
+
+class FollowUpEmailSchema(BaseModel):
+    subject: str
+    body: str
+    toName: str = Field("", alias="to_name")
+
+    class Config:
+        from_attributes = True
+        populate_by_name = True
+

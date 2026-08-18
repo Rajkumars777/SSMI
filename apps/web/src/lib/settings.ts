@@ -8,6 +8,10 @@ export interface SSMISettings {
   sttModel: string;
   preferredMicDeviceId?: string;
   captureTabAudio?: boolean;
+  /** Stereo Mix / VB-Cable / Voicemeeter — captures call audio without a screen picker. */
+  preferredLoopbackDeviceId?: string;
+  /** When true, skip loopback and always use the browser screen-share picker. */
+  forceDisplayMediaCapture?: boolean;
 }
 
 export const DEFAULT_SETTINGS: SSMISettings = {
@@ -16,10 +20,12 @@ export const DEFAULT_SETTINGS: SSMISettings = {
   stopGesture: 'whistle_double',
   customStopKeyword: 'Stop Meeting',
   confidenceThreshold: 0.95,
-  defaultMode: 'accurate',
-  sttModel: 'large-v3-turbo',
+  defaultMode: 'fast',
+  sttModel: 'small',
   preferredMicDeviceId: '',
   captureTabAudio: false,
+  preferredLoopbackDeviceId: '',
+  forceDisplayMediaCapture: false,
 };
 
 const STORAGE_KEY = 'ssmi_user_settings_v1';

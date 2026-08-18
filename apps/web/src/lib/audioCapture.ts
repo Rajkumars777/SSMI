@@ -135,17 +135,130 @@ export async function getMicrophoneStream(
   }
 }
 
-type DisplayMediaWithSystemAudio = MediaStreamConstraints & {
-  systemAudio?: 'include' | 'exclude';
+export type SystemAudioCaptureMethod = 'loopback' | 'display-media' | 'none';
+
+export interface SystemAudioCaptureResult {
+  stream: MediaStream | null;
+  method: SystemAudioCaptureMethod;
+  detail?: string;
+}
+
+const LOOPBACK_HINTS = [
+  'stereo mix',
+  'what u hear',
+  'wave link',
+  'vb-audio',
+  'virtual cable',
+  'voicemeeter',
+  'loopback',
+  'blackhole',
+  'soundflower',
+];
+
+export function isLoopbackLikeLabel(label: string): boolean {
+  const lower = label.toLowerCase();
+  return LOOPBACK_HINTS.some((hint) => lower.includes(hint));
+}
+
+/** Windows/macOS loopback devices (Stereo Mix, VB-Cable, etc.) — no screen picker required. */
+export async function listLoopbackAudioDevices(): Promise<AudioInputDevice[]> {
+  const devices = await listAudioInputDevices();
+  return devices.filter((d) => isLoopbackLikeLabel(d.label));
+}
+
+async function captureLoopbackAudioStream(deviceId?: string): Promise<MediaStream | null> {
+  const loopbackDevices = await listLoopbackAudioDevices();
+  if (loopbackDevices.length === 0) return null;
+
+  const target =
+    (deviceId && loopbackDevices.find((d) => d.deviceId === deviceId)) ||
+    loopbackDevices[0];
+
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: { ideal: target.deviceId },
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+        channelCount: 2,
+      },
+    });
+  } catch (err) {
+    console.warn('[SSMI Audio] Loopback device capture failed:', err);
+    return null;
+  }
+}
+
+type DisplayMediaAudioConstraints = MediaTrackConstraints & {
+  suppressLocalAudioPlayback?: boolean;
 };
 
+type DisplayMediaWithSystemAudio = MediaStreamConstraints & {
+  systemAudio?: 'include' | 'exclude';
+  monitorTypeSurfaces?: 'include' | 'exclude';
+  selfBrowserSurface?: 'include' | 'exclude';
+  preferCurrentTab?: boolean;
+};
+
+/** Chrome/Edge extended getDisplayMedia — not yet in all TypeScript DOM libs. */
+type ExtendedDisplayMedia = (
+  constraints?: DisplayMediaWithSystemAudio,
+) => Promise<MediaStream>;
+
+function getDisplayMedia(constraints: DisplayMediaWithSystemAudio): Promise<MediaStream> {
+  return (navigator.mediaDevices.getDisplayMedia as ExtendedDisplayMedia)(constraints);
+}
+
+function stripVideoTracks(stream: MediaStream): MediaStream {
+  stream.getVideoTracks().forEach((track) => {
+    track.stop();
+    stream.removeTrack(track);
+  });
+  return stream;
+}
+
+function hasUsableAudio(stream: MediaStream | null): stream is MediaStream {
+  return !!stream && stream.getAudioTracks().length > 0;
+}
+
 /**
- * Capture system / call / tab audio (what you hear through headphones).
- * Prompts to share screen or tab — user must enable "Share system audio" or "Share tab audio".
+ * Capture system / call audio via the browser screen-share picker.
+ * Prefer "Entire screen" + "Share system audio" — same API Meet/Teams use internally,
+ * but SSMI only keeps the audio track (nothing is broadcast to other participants).
  */
-export async function captureSystemAudioStream(): Promise<MediaStream | null> {
+async function captureDisplayMediaSystemAudio(): Promise<MediaStream | null> {
+  const constraints: DisplayMediaWithSystemAudio = {
+    video: {
+      displaySurface: 'monitor',
+    } as MediaTrackConstraints,
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      suppressLocalAudioPlayback: true,
+    } as DisplayMediaAudioConstraints,
+    systemAudio: 'include',
+    monitorTypeSurfaces: 'include',
+    selfBrowserSurface: 'exclude',
+    preferCurrentTab: false,
+  };
+
   try {
-    const constraints: DisplayMediaWithSystemAudio = {
+    const stream = await getDisplayMedia(constraints);
+    stripVideoTracks(stream);
+
+    if (!hasUsableAudio(stream)) {
+      stopStream(stream);
+      return null;
+    }
+    return stream;
+  } catch (err) {
+    console.warn('[SSMI Audio] Enhanced display-media capture failed, trying basic picker:', err);
+  }
+
+  try {
+    const fallbackConstraints: DisplayMediaWithSystemAudio = {
       video: true,
       audio: {
         echoCancellation: false,
@@ -155,27 +268,72 @@ export async function captureSystemAudioStream(): Promise<MediaStream | null> {
       systemAudio: 'include',
     };
 
-    const stream = await navigator.mediaDevices.getDisplayMedia(constraints);
+    const stream = await getDisplayMedia(fallbackConstraints);
+    stripVideoTracks(stream);
 
-    stream.getVideoTracks().forEach((track) => {
-      track.stop();
-      stream.removeTrack(track);
-    });
-
-    if (stream.getAudioTracks().length === 0) {
-      stream.getTracks().forEach((t) => t.stop());
+    if (!hasUsableAudio(stream)) {
+      stopStream(stream);
       return null;
     }
     return stream;
   } catch (err) {
-    console.warn('[SSMI Audio] System audio capture cancelled or failed:', err);
+    console.warn('[SSMI Audio] Display-media capture cancelled or failed:', err);
     return null;
   }
 }
 
+export interface CaptureSystemAudioOptions {
+  /** Prefer loopback device (Stereo Mix / VB-Cable) when available — skips the screen picker. */
+  preferLoopback?: boolean;
+  loopbackDeviceId?: string;
+  /** When true, always show the screen picker (Meet/Teams-style entire-screen + system audio). */
+  forceDisplayMedia?: boolean;
+}
+
+/**
+ * Capture system / call / meeting audio (what you hear through headphones or speakers).
+ *
+ * Strategies (in order when preferLoopback is enabled):
+ * 1. Loopback input device — Stereo Mix, VB-Audio Cable, Voicemeeter, etc.
+ * 2. getDisplayMedia — pick "Entire screen" and enable "Share system audio"
+ */
+export async function captureSystemAudioStream(
+  options: CaptureSystemAudioOptions = {},
+): Promise<SystemAudioCaptureResult> {
+  const { preferLoopback = true, loopbackDeviceId, forceDisplayMedia = false } = options;
+
+  if (preferLoopback && !forceDisplayMedia) {
+    const loopbackStream = await captureLoopbackAudioStream(loopbackDeviceId);
+    if (hasUsableAudio(loopbackStream)) {
+      const devices = await listLoopbackAudioDevices();
+      const label =
+        devices.find((d) => d.deviceId === loopbackDeviceId)?.label ||
+        devices[0]?.label ||
+        'Loopback device';
+      return {
+        stream: loopbackStream,
+        method: 'loopback',
+        detail: label,
+      };
+    }
+  }
+
+  const displayStream = await captureDisplayMediaSystemAudio();
+  if (hasUsableAudio(displayStream)) {
+    return {
+      stream: displayStream,
+      method: 'display-media',
+      detail: 'Entire screen + system audio',
+    };
+  }
+
+  return { stream: null, method: 'none' };
+}
+
 /** @deprecated Use captureSystemAudioStream */
 export async function captureTabAudioStream(): Promise<MediaStream | null> {
-  return captureSystemAudioStream();
+  const result = await captureSystemAudioStream();
+  return result.stream;
 }
 
 /** Mix multiple audio streams into one for MediaRecorder. */

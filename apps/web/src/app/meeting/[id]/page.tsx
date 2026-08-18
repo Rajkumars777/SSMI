@@ -35,11 +35,44 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
   const [tab, setTab] = useState<Tab>('summary');
   const [activeEvent, setActiveEvent] = useState<string | null>(null);
   const [processingElapsed, setProcessingElapsed] = useState(0);
+  const [emailDraft, setEmailDraft] = useState<{ subject: string; body: string; toName: string } | null>(null);
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [emailError, setEmailError] = useState<string | null>(null);
+  const [copiedField, setCopiedField] = useState<'subject' | 'body' | 'all' | null>(null);
   const audioPlayerRef = useRef<MeetingAudioPlayerHandle>(null);
 
   const jumpToTime = useCallback((seconds: number) => {
     audioPlayerRef.current?.playAt(seconds);
   }, []);
+
+  const handleGenerateEmail = useCallback(async () => {
+    setEmailLoading(true);
+    setEmailError(null);
+    try {
+      const draft = await apiClient.generateFollowUpEmail(id);
+      setEmailDraft(draft);
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : 'Failed to generate email');
+    } finally {
+      setEmailLoading(false);
+    }
+  }, [id]);
+
+  const handleCopyEmail = useCallback(async (field: 'subject' | 'body' | 'all') => {
+    if (!emailDraft) return;
+    const text = field === 'subject'
+      ? emailDraft.subject
+      : field === 'body'
+        ? emailDraft.body
+        : `Subject: ${emailDraft.subject}\n\n${emailDraft.body}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    } catch {
+      alert('Could not copy to clipboard');
+    }
+  }, [emailDraft]);
 
   useEffect(() => {
     let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -257,6 +290,17 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
                 Reprocess Audio
               </button>
             )}
+            {meeting.status === 'completed' && activeSummary && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ marginRight: '0.75rem', fontSize: '0.85rem' }}
+                onClick={handleGenerateEmail}
+                disabled={emailLoading}
+              >
+                {emailLoading ? 'Generating…' : 'Follow-Up Email'}
+              </button>
+            )}
             <div className={styles.headerStat}>
               <div className={styles.headerStatVal}>{timeline?.length ?? 0}</div>
               <div className={styles.headerStatLab}>Events</div>
@@ -272,7 +316,7 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
           </div>
         </div>
 
-        {(meeting.status === 'completed' || meeting.status === 'failed' || meeting.status === 'recording') && (
+        {(meeting.status === 'completed' || meeting.status === 'recording') && (
           <MeetingAudioPlayer ref={audioPlayerRef} meetingId={id} />
         )}
 
@@ -607,6 +651,92 @@ export default function MeetingDetailPage({ params }: { params: Promise<{ id: st
           </div>
         )}
       </div>
+
+      {/* Follow-up email modal */}
+      {(emailDraft || emailError) && (
+        <div className={styles.emailOverlay} onClick={() => { setEmailDraft(null); setEmailError(null); }}>
+          <div className={`glass-card ${styles.emailModal}`} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.emailModalHeader}>
+              <div>
+                <h2 className={styles.emailModalTitle}>Follow-Up Email Draft</h2>
+                {emailDraft && (
+                  <p className={styles.emailModalSub}>
+                    To: {emailDraft.toName || meeting.customerName}
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                className={styles.emailCloseBtn}
+                onClick={() => { setEmailDraft(null); setEmailError(null); }}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+
+            {emailError && (
+              <div className={styles.emailError}>{emailError}</div>
+            )}
+
+            {emailDraft && (
+              <>
+                <div className={styles.emailField}>
+                  <div className={styles.emailFieldHead}>
+                    <label>Subject</label>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+                      onClick={() => handleCopyEmail('subject')}
+                    >
+                      {copiedField === 'subject' ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <div className={styles.emailSubject}>{emailDraft.subject}</div>
+                </div>
+
+                <div className={styles.emailField}>
+                  <div className={styles.emailFieldHead}>
+                    <label>Body</label>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+                      onClick={() => handleCopyEmail('body')}
+                    >
+                      {copiedField === 'body' ? 'Copied!' : 'Copy'}
+                    </button>
+                  </div>
+                  <textarea
+                    className={styles.emailBody}
+                    readOnly
+                    value={emailDraft.body}
+                    rows={16}
+                  />
+                </div>
+
+                <div className={styles.emailActions}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => handleCopyEmail('all')}
+                  >
+                    {copiedField === 'all' ? 'Copied to Clipboard!' : 'Copy Full Email'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => { setEmailDraft(null); setEmailError(null); }}
+                  >
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

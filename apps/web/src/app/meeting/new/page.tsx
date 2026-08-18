@@ -11,7 +11,7 @@ import styles from './page.module.css';
 export default function NewMeetingPage() {
   const router = useRouter();
   const [tab, setTab] = useState<'live' | 'upload'>('live');
-  const [mode, setMode] = useState<'fast' | 'accurate'>('accurate');
+  const [mode, setMode] = useState<'fast' | 'accurate'>('fast');
   const [customerName, setCustomerName] = useState('');
   const [customerCompany, setCustomerCompany] = useState('');
   const [meetingTitle, setMeetingTitle] = useState('');
@@ -46,6 +46,7 @@ export default function NewMeetingPage() {
       setSettings(updated);
       setCustomBookmarkInput(updated.customBookmarkKeyword);
       setCustomStopInput(updated.customStopKeyword);
+      setMode(updated.defaultMode);
     }
     reload();
     window.addEventListener('ssmi-settings-changed', reload);

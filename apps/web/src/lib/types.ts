@@ -100,6 +100,14 @@ export interface ActionItem {
   priority: 'high' | 'medium' | 'low';
 }
 
+// ─── Follow-Up Email ──────────────────────────────────────────────────────────
+
+export interface FollowUpEmail {
+  subject: string;
+  body: string;
+  toName: string;
+}
+
 // ─── Search ───────────────────────────────────────────────────────────────────
 
 export interface SearchResult {

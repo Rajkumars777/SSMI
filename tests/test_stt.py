@@ -60,3 +60,25 @@ def test_merge_duplicate_segments():
     assert len(merged) == 2
     assert merged[0]["end_time"] == 178.57
     assert merged[1]["text"] == "Next sentence here."
+
+
+def test_pick_model_for_vram():
+    from services.transcription.stt import pick_model_for_vram
+
+    assert pick_model_for_vram("large-v3-turbo", 5000) == "large-v3-turbo"
+    assert pick_model_for_vram("large-v3-turbo", 2000) == "small"
+    assert pick_model_for_vram("medium", 1500) == "base"
+
+
+def test_build_model_fallback_chain():
+    from services.transcription.stt import _build_model_fallback_chain
+
+    chain = _build_model_fallback_chain("base")
+    assert chain == ["base", "tiny"]
+
+
+def test_is_memory_error():
+    from services.transcription.stt import _is_memory_error
+
+    assert _is_memory_error(Exception("mkl_malloc: failed to allocate memory"))
+    assert not _is_memory_error(Exception("file not found"))

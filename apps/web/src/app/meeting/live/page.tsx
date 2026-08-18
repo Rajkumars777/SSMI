@@ -15,7 +15,9 @@ import {
   stopStream,
   createAudioLevelMonitor,
   isHeadsetLikeLabel,
+  listLoopbackAudioDevices,
   type AudioInputDevice,
+  type SystemAudioCaptureMethod,
 } from '@/lib/audioCapture';
 
 
@@ -84,6 +86,9 @@ function LiveMeetingInner() {
   const [selectedMicId, setSelectedMicId]       = useState('');
   const [captureTabAudio, setCaptureTabAudio]   = useState(false);
   const [tabAudioActive, setTabAudioActive]     = useState(false);
+  const [systemAudioMethod, setSystemAudioMethod] = useState<SystemAudioCaptureMethod | null>(null);
+  const [systemAudioDetail, setSystemAudioDetail] = useState<string | null>(null);
+  const [loopbackDevices, setLoopbackDevices]   = useState<AudioInputDevice[]>([]);
   const [micReady, setMicReady]                   = useState(false);
   const [micError, setMicError]                 = useState<string | null>(null);
   const [audioLevel, setAudioLevel]             = useState(0);
@@ -148,9 +153,11 @@ function LiveMeetingInner() {
       }
 
       const devices = await listAudioInputDevices();
+      const loopback = await listLoopbackAudioDevices();
       if (cancelled) return;
 
       setMicDevices(devices);
+      setLoopbackDevices(loopback);
       const loaded = loadSettings();
       const resolved = resolveMicDeviceId(devices, loaded.preferredMicDeviceId || undefined);
       setSelectedMicId(resolved || devices[0]?.deviceId || '');
@@ -191,6 +198,8 @@ function LiveMeetingInner() {
     }
     setAudioLevel(0);
     setTabAudioActive(false);
+    setSystemAudioMethod(null);
+    setSystemAudioDetail(null);
     setMicActive(false);
   }
 
@@ -353,15 +362,27 @@ function LiveMeetingInner() {
       const streams: MediaStream[] = [micStream];
 
       if (captureTabAudio) {
-        const systemStream = await captureSystemAudioStream();
-        if (systemStream) {
-          tabStreamRef.current = systemStream;
-          streams.push(systemStream);
+        const loaded = loadSettings();
+        const captureResult = await captureSystemAudioStream({
+          preferLoopback: !loaded.forceDisplayMediaCapture,
+          loopbackDeviceId: loaded.preferredLoopbackDeviceId || undefined,
+          forceDisplayMedia: !!loaded.forceDisplayMediaCapture,
+        });
+
+        if (captureResult.stream) {
+          tabStreamRef.current = captureResult.stream;
+          streams.push(captureResult.stream);
           setTabAudioActive(true);
+          setSystemAudioMethod(captureResult.method);
+          setSystemAudioDetail(captureResult.detail ?? null);
         } else {
-          setMicError(
-            'System audio not shared. When prompted, pick your meeting window/screen and check "Share system audio" or "Share tab audio".',
-          );
+          setSystemAudioMethod('none');
+          setSystemAudioDetail(null);
+          const loopbackHint =
+            loopbackDevices.length > 0
+              ? ' Enable Stereo Mix / VB-Cable in Windows, or use the screen picker: choose "Entire screen" and check "Share system audio".'
+              : ' When prompted, choose "Entire screen" (not Window/Tab) and check "Share system audio". Or install VB-Audio Cable / enable Stereo Mix for picker-free capture.';
+          setMicError(`System audio not captured.${loopbackHint}`);
         }
       }
 
@@ -406,7 +427,7 @@ function LiveMeetingInner() {
       setMicActive(false);
       setConnectionStatus('offline');
     }
-  }, [selectedMicId, captureTabAudio, startSpeechRecognition]);
+  }, [selectedMicId, captureTabAudio, loopbackDevices.length, startSpeechRecognition]);
 
   function handleMicChange(deviceId: string) {
     setSelectedMicId(deviceId);
@@ -653,12 +674,24 @@ function LiveMeetingInner() {
                   />
                   <span>
                     Also capture system / call audio
-                    <small>Required with headphones — when prompted, share your meeting screen/tab and enable &quot;Share system audio&quot;</small>
+                    <small>
+                      Captures what you hear (Meet/Teams call audio). SSMI does not share your screen to others — only records audio locally.
+                      {loopbackDevices.length > 0
+                        ? ' Uses loopback device automatically when available; otherwise pick "Entire screen" + "Share system audio".'
+                        : ' When prompted, pick "Entire screen" and enable "Share system audio".'}
+                    </small>
                   </span>
                 </label>
 
                 {tabAudioActive && (
-                  <span className={styles.tabAudioBadge}>System audio active</span>
+                  <span className={styles.tabAudioBadge}>
+                    System audio active
+                    {systemAudioMethod === 'loopback' && systemAudioDetail
+                      ? ` · ${systemAudioDetail}`
+                      : systemAudioMethod === 'display-media'
+                        ? ' · Entire screen capture'
+                        : ''}
+                  </span>
                 )}
 
                 {micError && (

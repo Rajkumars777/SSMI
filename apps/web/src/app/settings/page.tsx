@@ -5,6 +5,7 @@ import { loadSettings, saveSettings, DEFAULT_SETTINGS, type SSMISettings } from 
 import {
   ensureMicPermission,
   listAudioInputDevices,
+  listLoopbackAudioDevices,
   isHeadsetLikeLabel,
   type AudioInputDevice,
 } from '@/lib/audioCapture';
@@ -65,7 +66,10 @@ export default function SettingsPage() {
   const [sttModel, setSttModel] = useState('large-v3-turbo');
   const [preferredMicDeviceId, setPreferredMicDeviceId] = useState('');
   const [captureTabAudio, setCaptureTabAudio] = useState(false);
+  const [preferredLoopbackDeviceId, setPreferredLoopbackDeviceId] = useState('');
+  const [forceDisplayMediaCapture, setForceDisplayMediaCapture] = useState(false);
   const [micDevices, setMicDevices] = useState<AudioInputDevice[]>([]);
+  const [loopbackDevices, setLoopbackDevices] = useState<AudioInputDevice[]>([]);
   const [activeSection, setActiveSection] = useState('voice');
   const [saved, setSaved] = useState(false);
 
@@ -80,6 +84,8 @@ export default function SettingsPage() {
     setSttModel(initial.sttModel);
     setPreferredMicDeviceId(initial.preferredMicDeviceId || '');
     setCaptureTabAudio(!!initial.captureTabAudio);
+    setPreferredLoopbackDeviceId(initial.preferredLoopbackDeviceId || '');
+    setForceDisplayMediaCapture(!!initial.forceDisplayMediaCapture);
   }, []);
 
   useEffect(() => {
@@ -87,6 +93,7 @@ export default function SettingsPage() {
       const permitted = await ensureMicPermission();
       if (!permitted) return;
       setMicDevices(await listAudioInputDevices());
+      setLoopbackDevices(await listLoopbackAudioDevices());
     }
     loadDevices();
     navigator.mediaDevices?.addEventListener('devicechange', loadDevices);
@@ -105,6 +112,8 @@ export default function SettingsPage() {
       sttModel,
       preferredMicDeviceId,
       captureTabAudio,
+      preferredLoopbackDeviceId,
+      forceDisplayMediaCapture,
     };
 
     saveSettings(updated);
@@ -299,11 +308,51 @@ export default function SettingsPage() {
                       <span>
                         Also capture system / call audio
                         <small className={styles.hint} style={{ display: 'block', marginTop: 4 }}>
-                          Required with headphones — share your meeting screen/tab with &quot;Share system audio&quot; enabled.
+                          Records what you hear from Meet/Teams/Zoom. SSMI does not broadcast your screen to others.
                         </small>
                       </span>
                     </label>
                   </div>
+
+                  {captureTabAudio && loopbackDevices.length > 0 && (
+                    <div className={styles.formGroup}>
+                      <label className={styles.label}>Loopback audio device (optional)</label>
+                      <p className={styles.hint}>
+                        Stereo Mix, VB-Cable, or Voicemeeter — captures call audio without the screen picker.
+                      </p>
+                      <select
+                        className="input"
+                        value={preferredLoopbackDeviceId}
+                        onChange={(e) => setPreferredLoopbackDeviceId(e.target.value)}
+                        id="preferred-loopback"
+                      >
+                        <option value="">Auto-detect loopback device</option>
+                        {loopbackDevices.map((d) => (
+                          <option key={d.deviceId} value={d.deviceId}>
+                            {d.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {captureTabAudio && (
+                    <div className={styles.formGroup}>
+                      <label className={styles.checkboxRow}>
+                        <input
+                          type="checkbox"
+                          checked={forceDisplayMediaCapture}
+                          onChange={(e) => setForceDisplayMediaCapture(e.target.checked)}
+                        />
+                        <span>
+                          Always use screen picker (Entire screen + system audio)
+                          <small className={styles.hint} style={{ display: 'block', marginTop: 4 }}>
+                            Same technique as Google Meet — pick your monitor and enable &quot;Share system audio&quot;.
+                          </small>
+                        </span>
+                      </label>
+                    </div>
+                  )}
 
                   <div className="divider" />
 

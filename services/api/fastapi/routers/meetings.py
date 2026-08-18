@@ -30,8 +30,9 @@ from ..schemas import (
     MeetingSummarySchema,
     DashboardStatsSchema,
     FinalizeLiveMeetingSchema,
+    FollowUpEmailSchema,
 )
-from services.transcription.stt import transcribe_audio, TranscriptionError
+from services.transcription.stt import transcribe_audio, TranscriptionError, pick_model_for_vram
 from services.transcription.audio_utils import prepare_audio_for_whisper, ffmpeg_available
 from services.diarization.diarizer import SpeakerDiarizer
 from services.intelligence.timeline_engine import TimelineEngine
@@ -64,18 +65,16 @@ def _audio_media_type(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     return _AUDIO_MEDIA_TYPES.get(ext, "application/octet-stream")
 
-# large-v3-turbo gives best accuracy on GPU. Whisper is loaded/unloaded per call
-# so VRAM is never contended with Ollama/Qwen.
+# large-v3-turbo on GPU when VRAM allows; fast mode uses small for speed + lower RAM.
 WHISPER_MODEL_NAME = os.getenv("WHISPER_MODEL_NAME", "large-v3-turbo")
-WHISPER_FAST_MODEL = os.getenv("WHISPER_FAST_MODEL", "medium")
+WHISPER_FAST_MODEL = os.getenv("WHISPER_FAST_MODEL", "small")
 OLLAMA_ENDPOINT    = os.getenv("VLLM_ENDPOINT", "http://localhost:11434/v1").replace("/v1", "")
 OLLAMA_MODEL       = os.getenv("VLLM_MODEL_NAME", "qwen2.5:14b")
 
 
-def _whisper_model_for_mode(mode: ProcessingMode) -> str:
-    if mode == ProcessingMode.FAST:
-        return WHISPER_FAST_MODEL
-    return WHISPER_MODEL_NAME
+def _whisper_model_for_mode(mode: ProcessingMode, free_vram_mb: int = -1) -> str:
+    requested = WHISPER_FAST_MODEL if mode == ProcessingMode.FAST else WHISPER_MODEL_NAME
+    return pick_model_for_vram(requested, free_vram_mb)
 
 # Summarizer is lightweight (HTTP client only — no VRAM) — safe to keep as singleton
 _summarizer: "QwenSummarizer | None" = None
@@ -312,8 +311,6 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
 
             _check_pipeline_cancelled(meeting_id)
 
-            whisper_model = _whisper_model_for_mode(meeting.processing_mode)
-
             # ── 1. Unload Ollama so Whisper gets full VRAM ───────────────────
             free_before = vram_free_mb()
             print(f"\n======================================================================", flush=True)
@@ -324,6 +321,8 @@ async def _run_ai_pipeline_locked(meeting_id: str, file_path: str):
             await asyncio.to_thread(unload_ollama_model, OLLAMA_ENDPOINT, OLLAMA_MODEL)
             free_after = vram_free_mb()
             print(f"[Pipeline] VRAM free after Ollama unload: {free_after} MB", flush=True)
+
+            whisper_model = _whisper_model_for_mode(meeting.processing_mode, free_after)
 
             _check_pipeline_cancelled(meeting_id)
 
@@ -1087,3 +1086,61 @@ async def get_meeting(meeting_id: str, db: AsyncSession = Depends(get_db)):
     if not meeting:
         raise HTTPException(status_code=404, detail="Meeting not found")
     return meeting
+
+
+@router.post("/{meeting_id}/follow-up-email", response_model=FollowUpEmailSchema, response_model_by_alias=False)
+async def generate_follow_up_email(meeting_id: str, db: AsyncSession = Depends(get_db)):
+    """Generate a post-meeting follow-up email draft from summary and action items."""
+    result = await db.execute(
+        select(Meeting)
+        .options(
+            selectinload(Meeting.summary),
+            selectinload(Meeting.action_items),
+        )
+        .where(Meeting.id == meeting_id)
+    )
+    meeting = result.scalar_one_or_none()
+    if not meeting:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    if meeting.status != MeetingStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Meeting must be completed before generating a follow-up email")
+
+    if not meeting.summary:
+        raise HTTPException(status_code=400, detail="No meeting summary available — run AI processing first")
+
+    summary = meeting.summary
+    action_items = [
+        {
+            "title": item.title,
+            "description": item.description,
+            "owner": item.owner.value if hasattr(item.owner, "value") else str(item.owner),
+            "deadline": item.deadline,
+            "priority": item.priority,
+        }
+        for item in (meeting.action_items or [])
+    ]
+
+    meeting_date = meeting.date.strftime("%B %d, %Y") if meeting.date else "recently"
+    summarizer = _get_summarizer()
+
+    email_data = await asyncio.to_thread(
+        summarizer.generate_follow_up_email,
+        meeting.customer_name,
+        meeting.customer_company or "",
+        meeting.title,
+        meeting_date,
+        {
+            "overview": summary.overview,
+            "key_points": summary.key_points or [],
+            "decisions": summary.decisions or [],
+            "next_steps": summary.next_steps or [],
+        },
+        action_items,
+    )
+
+    return FollowUpEmailSchema(
+        subject=email_data["subject"],
+        body=email_data["body"],
+        toName=email_data.get("toName") or meeting.customer_name,
+    )
