@@ -8,7 +8,7 @@ The application intelligently records a meeting, identifies important discussion
 
 The system supports both **live meetings** and **uploaded audio recordings**.
 
----
+----
 
 # Problem Statement
 
@@ -18,7 +18,7 @@ Traditional recording applications save the complete conversation, forcing users
 
 This project solves that problem by automatically identifying, bookmarking, and summarizing only the important moments.
 
----
+----
 
 # Objectives
 
@@ -32,7 +32,7 @@ This project solves that problem by automatically identifying, bookmarking, and 
 - Searchable meeting history
 - Support uploaded audio analysis
 
----
+----
 
 # Core Features
 
@@ -45,7 +45,7 @@ The application:
 - Starts recording
 - Begins AI analysis
 
----
+----
 
 ## 2. Intelligent Recording
 
@@ -62,7 +62,7 @@ Instead of treating every second equally, AI continuously analyzes:
 
 Only meaningful discussion segments are highlighted.
 
----
+----
 
 ## 3. Voice Gesture Bookmarking
 
@@ -76,13 +76,13 @@ When detected:
 
 No manual interaction is required.
 
----
+----
 
 ## 4. Voice Gesture to Stop Meeting
 
 Another predefined voice cue ends the meeting recording hands-free.
 
----
+----
 
 ## 5. AI Timeline Generation
 
@@ -95,7 +95,7 @@ Example:
 | 15:20 | 16:10 | Pricing |
 | 20:15 | 21:05 | Final Decision |
 
----
+----
 
 ## 6. AI Meeting Summary
 
@@ -108,7 +108,7 @@ After processing, the system generates:
 - Follow-up actions
 - Customer sentiment
 
----
+----
 
 ## 7. Action Item Extraction
 
@@ -120,7 +120,7 @@ Automatically identifies tasks such as:
 - Arrange technical meeting
 - Follow-up date
 
----
+----
 
 ## 8. Uploaded Audio Analysis
 
@@ -138,7 +138,7 @@ The same AI pipeline generates:
 - Summary
 - Action items
 
----
+----
 
 ## AI Capabilities
 
@@ -152,7 +152,7 @@ The same AI pipeline generates:
 - Meeting summarization
 - Intelligent timeline generation
 
----
+----
 
 # User Workflow
 
@@ -164,7 +164,7 @@ The same AI pipeline generates:
 6. AI processes the recording.
 7. Review summaries, timelines, and action items.
 
----
+----
 
 # Future Enhancements
 
@@ -177,7 +177,7 @@ The same AI pipeline generates:
 - Opportunity scoring
 - Team analytics dashboards
 
----
+----
 
 # Benefits
 
